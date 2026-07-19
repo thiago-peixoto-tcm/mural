@@ -67,16 +67,10 @@ def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
     
     midia = MediaIoBaseUpload(conteudo_bytes, mimetype=mimetype, resumable=True)
     if arquivos:
+        print(f"💾 Atualizando conteúdo do arquivo existente: {nome_arquivo}")
         servico.files().update(fileId=arquivos[0]['id'], media_body=midia, supportsAllDrives=True).execute()
     else:
-        metadados = {'name': nome_arquivo, 'parents': [ID_PASTA_GOOGLE_DRIVE]}
-        # O parâmetro moveToNewOwnersSyncedBuddyKeepOptions garante que o arquivo use a cota de armazenamento do proprietário da pasta destino
-        servico.files().create(
-            body=metadados, 
-            media_body=midia, 
-            supportsAllDrives=True,
-            keepRevisionForever=False
-        ).execute()
+        raise Exception(f"❌ Erro crítico: O arquivo pré-criado '{nome_arquivo}' não foi encontrado na pasta do Drive. Por favor, crie-o manualmente primeiro.")
         
         
 def descobrir_total_itens_e_paginas():
