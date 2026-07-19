@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 
 CONEXOES_SIMULTANEAS = 3   
-MODO_TESTE = True          # Deixe True para validar o primeiro teste.
+MODO_TESTE = False          # Deixe True para validar o primeiro teste.
 # ---------------------------------------------
 
 URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
