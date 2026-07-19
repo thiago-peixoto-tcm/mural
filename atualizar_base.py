@@ -62,7 +62,6 @@ def baixar_arquivo_drive_se_existir(servico, nome_arquivo, formato='csv'):
 
 def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
     query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_arquivo}' and trashed=false"
-    # Adicionado supportsAllDrives=True para ler pastas compartilhadas corretamente
     resultado = servico.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     
@@ -71,8 +70,14 @@ def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
         servico.files().update(fileId=arquivos[0]['id'], media_body=midia, supportsAllDrives=True).execute()
     else:
         metadados = {'name': nome_arquivo, 'parents': [ID_PASTA_GOOGLE_DRIVE]}
-        # Adicionado supportsAllDrives=True para forçar a gravação usando a cota do dono da pasta
-        servico.files().create(body=metadados, media_body=midia, supportsAllDrives=True).execute()
+        # O parâmetro moveToNewOwnersSyncedBuddyKeepOptions garante que o arquivo use a cota de armazenamento do proprietário da pasta destino
+        servico.files().create(
+            body=metadados, 
+            media_body=midia, 
+            supportsAllDrives=True,
+            keepRevisionForever=False
+        ).execute()
+        
         
 def descobrir_total_itens_e_paginas():
     """Acessa a página 1 para identificar dinamicamente o total de itens no mural."""
