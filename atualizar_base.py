@@ -17,8 +17,8 @@ ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 NOME_CSV_ORIGEM = "base_licitacoes.csv"
 NOME_EXCEL_FINAL = "base_licitacoes_relacional.xlsx"
 
-CONEXOES_SIMULTANEAS = 3   # Diminuído de 10 para 3 (evita derrubar o site do TCM)
-MODO_TESTE = True          # ATIVE O MODO TESTE (Coloque True) para a primeira execução!
+CONEXOES_SIMULTANEAS = 3   # Mantido em 3 para estabilidade de conexão com o portal
+MODO_TESTE = True          # Deixe True para validar as primeiras 2 páginas. Depois mude para False.
 # ---------------------------------------------
 
 URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
@@ -35,7 +35,7 @@ def obter_servico_google_drive():
 
 def baixar_arquivo_drive_se_existir(servico, nome_arquivo, formato='csv'):
     query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_arquivo}' and trashed=false"
-    resultado = servico.files().list(q=query, fields="files(id)").execute()
+    resultado = servico.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     if not arquivos:
         return None
@@ -65,16 +65,18 @@ def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
     resultado = servico.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     
-    midia = MediaIoBaseUpload(conteudo_bytes, mimetype=mimetype, resumable=True)
+    # resumable=False força o upload direto via multipart, contornando travas de cota da Service Account
+    midia = MediaIoBaseUpload(conteudo_bytes, mimetype=mimetype, resumable=False)
+    
     if arquivos:
         print(f"💾 Atualizando conteúdo do arquivo existente: {nome_arquivo}")
         servico.files().update(fileId=arquivos[0]['id'], media_body=midia, supportsAllDrives=True).execute()
     else:
-        raise Exception(f"❌ Erro crítico: O arquivo pré-criado '{nome_arquivo}' não foi encontrado na pasta do Drive. Por favor, crie-o manualmente primeiro.")
-        
-        
+        print(f"📝 Criando novo arquivo na pasta compartilhada: {nome_arquivo}")
+        metadados = {'name': nome_arquivo, 'parents': [ID_PASTA_GOOGLE_DRIVE]}
+        servico.files().create(body=metadados, media_body=midia, supportsAllDrives=True).execute()
+
 def descobrir_total_itens_e_paginas():
-    """Acessa a página 1 para identificar dinamicamente o total de itens no mural."""
     url = f"{URL_BASE_MURAL}?page=1&per-page=30"
     res = requests.get(url, headers=HEADERS, timeout=20)
     if res.status_code != 200:
@@ -91,11 +93,10 @@ def descobrir_total_itens_e_paginas():
         print(f"📊 Total de Itens identificados no TCM-PA: {total_itens} ({total_paginas} páginas)")
         return total_paginas
     else:
-        print("⚠️ Aviso: Texto de paginação não localizado. Usando contingência padrão de páginas.")
+        print("⚠️ Aviso: Texto de paginação não localizado. Usando contingência padrão.")
         return 5000 
 
 def raspar_pagina_listagem(num_pagina):
-    """Raspa a tabela de uma página específica da listagem do mural."""
     url = f"{URL_BASE_MURAL}?page={num_pagina}&per-page=30"
     linhas_coletadas = []
     try:
@@ -109,7 +110,7 @@ def raspar_pagina_listagem(num_pagina):
                     for tr in corpo.find_all('tr'):
                         tds = tr.find_all('td')
                         if len(tds) >= 10:
-                            link_tag = tds[1].find('a') # Coluna 'Número' contém o ID/link
+                            link_tag = tds[1].find('a')
                             if link_tag and link_tag.get('href'):
                                 link_ficha = link_tag['href']
                                 if not link_ficha.startswith('http'):
@@ -205,7 +206,6 @@ def raspar_ficha_detalhes(linha_dados):
                     detalhes["Total_Contratos"] = badges[4].get_text(strip=True)
                     detalhes["Total_Aditivos"] = badges[5].get_text(strip=True)
 
-                # Abas secundárias (Documentos / Publicidades / Participantes / Contratos)
                 for aba_id, nome_aba in [('documentos', 'Documentos'), ('publicidades', 'Publicidades')]:
                     div = soup.find('div', id=aba_id)
                     if div:
@@ -242,16 +242,15 @@ def principal():
     print("🔄 Conectando ao Google Drive...")
     servico = obter_servico_google_drive()
     
-    # 1. Descobrir total de páginas dinamicamente no site do TCM
     total_paginas = descobrir_total_itens_e_paginas()
     if MODO_TESTE:
         total_paginas = 2
+        print("💡 Modo de teste ativo: varrendo apenas as 2 primeiras páginas.")
     
-    # 2. Carregar o histórico existente no Drive para evitar retrabalho estrutural
     df_csv_antigo = baixar_arquivo_drive_se_existir(servico, NOME_CSV_ORIGEM, 'csv')
     links_ja_mapeados = set(df_csv_antigo['Link_Ficha'].tolist()) if df_csv_antigo is not None else set()
     
-    print(f"🔎 Varrendo as {total_paginas} páginas do mural em busca de novas licitações...")
+    print(f"🔎 Varrendo as {total_paginas} páginas do mural em busca de licitações...")
     novas_linhas_mural = []
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
@@ -261,19 +260,17 @@ def principal():
             novas_linhas_mural.extend(res_pag)
 
     if not novas_linhas_mural:
-        print("❌ Nenhuma linha capturada do portal. Abortando para proteger os dados anteriores.")
+        print("❌ Nenhuma linha capturada do portal. Abortando para proteger dados existentes.")
         return
 
     df_mural_atualizado = pd.DataFrame(novas_linhas_mural).drop_duplicates(subset=['Link_Ficha'])
     
-    # Salvar a nova lista consolidada no formato CSV de origem
     output_csv = io.StringIO()
     df_mural_atualizado.to_csv(output_csv, sep=';', index=False, encoding='utf-8')
     csv_bytes = io.BytesIO(output_csv.getvalue().encode('utf-8'))
     salvar_arquivo_no_drive(servico, NOME_CSV_ORIGEM, csv_bytes, 'text/csv')
-    print(f"💾 Arquivo '{NOME_CSV_ORIGEM}' atualizado e salvo no Drive.")
+    print(f"💾 Arquivo '{NOME_CSV_ORIGEM}' atualizado/criado no Drive.")
 
-    # 3. Filtrar apenas o que é REALMENTE novo para extrair os detalhes
     fichas_para_detalhar = [r for r in novas_linhas_mural if r['Link_Ficha'] not in links_ja_mapeados]
     print(f"🚀 {len(fichas_para_detalhar)} novas licitações encontradas para detalhamento profundo.")
     
@@ -305,16 +302,14 @@ def principal():
         df_principal_acumulado = pd.concat([df_principal_acumulado, df_novas_p], ignore_index=True).drop_duplicates(subset=['Link_Ficha'])
         df_fato_acumulado = pd.concat([df_fato_acumulado, df_novas_f], ignore_index=True)
     else:
-        print("☕ Nenhuma nova ficha encontrada para detalhar hoje. Apenas sincronizando estruturas.")
+        print("☕ Nenhuma nova ficha encontrada para detalhar hoje.")
 
-    # Ajuste de colunas da tabela fato
     colunas_fato = ["Link_Ficha", "Origem_Aba", "Propriedade_Coluna", "Valor_Resultado", "Contrato_Numero", "Contrato_Valor", "Contrato_Data_Cadastro", "Contrato_Contratante", "Contrato_Contratado", "Contrato_Vigencia_Inicio", "Contrato_Vigencia_Fim"]
     for c in colunas_fato:
         if c not in df_fato_acumulado.columns: df_fato_acumulado[c] = ""
     if not df_fato_acumulado.empty:
         df_fato_acumulado = df_fato_acumulado[colunas_fato]
 
-    # Guardar Excel relacional com as duas abas atualizadas no Drive
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
         df_principal_acumulado.to_excel(writer, sheet_name='Licitacoes_Principais', index=False)
@@ -322,7 +317,7 @@ def principal():
     output_excel.seek(0)
     
     salvar_arquivo_no_drive(servico, NOME_EXCEL_FINAL, output_excel, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    print("✅ PROCESSO CONCLUÍDO COM SUCESSO COLETANDO DIRETAMENTE DO SITE!")
+    print("✅ PROCESSO CONCLUÍDO COM SUCESSO!")
 
 if __name__ == "__main__":
     principal()
