@@ -17,8 +17,8 @@ ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 NOME_CSV_ORIGEM = "base_licitacoes.csv"
 NOME_EXCEL_FINAL = "base_licitacoes_relacional.xlsx"
 
-CONEXOES_SIMULTANEAS = 10  
-MODO_TESTE = False # Mude para True para testar apenas as 2 primeiras páginas da listagem
+CONEXOES_SIMULTANEAS = 3   # Diminuído de 10 para 3 (evita derrubar o site do TCM)
+MODO_TESTE = True          # ATIVE O MODO TESTE (Coloque True) para a primeira execução!
 # ---------------------------------------------
 
 URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
