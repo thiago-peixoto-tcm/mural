@@ -1,0 +1,30 @@
+name: Robô Diário de Licitações
+
+on:
+  schedule:
+    # Roda todos os dias às 04:00 UTC (01:00h da manhã no horário de Brasília)
+    - cron: '0 4 * * *'
+  workflow_dispatch: # Permite que você rode o robô manualmente quando quiser clicando em um botão
+
+jobs:
+  executar-script:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Baixar o código do repositório
+      uses: actions/checkout@v4
+
+    - name: Configurar o Python no servidor
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Instalar as bibliotecas necessárias
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pandas bs4 openpyxl google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
+    - name: Executar o Script de Raspagem
+      env:
+        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
+      run: python atualizar_base.py
