@@ -62,16 +62,18 @@ def baixar_arquivo_drive_se_existir(servico, nome_arquivo, formato='csv'):
 
 def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
     query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_arquivo}' and trashed=false"
-    resultado = servico.files().list(q=query, fields="files(id)").execute()
+    # Adicionado supportsAllDrives=True para ler pastas compartilhadas corretamente
+    resultado = servico.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     
     midia = MediaIoBaseUpload(conteudo_bytes, mimetype=mimetype, resumable=True)
     if arquivos:
-        servico.files().update(fileId=arquivos[0]['id'], media_body=midia).execute()
+        servico.files().update(fileId=arquivos[0]['id'], media_body=midia, supportsAllDrives=True).execute()
     else:
         metadados = {'name': nome_arquivo, 'parents': [ID_PASTA_GOOGLE_DRIVE]}
-        servico.files().create(body=metadados, media_body=midia).execute()
-
+        # Adicionado supportsAllDrives=True para forçar a gravação usando a cota do dono da pasta
+        servico.files().create(body=metadados, media_body=midia, supportsAllDrives=True).execute()
+        
 def descobrir_total_itens_e_paginas():
     """Acessa a página 1 para identificar dinamicamente o total de itens no mural."""
     url = f"{URL_BASE_MURAL}?page=1&per-page=30"
