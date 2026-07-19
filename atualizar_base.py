@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import math
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -17,79 +18,120 @@ NOME_CSV_ORIGEM = "base_licitacoes.csv"
 NOME_EXCEL_FINAL = "base_licitacoes_relacional.xlsx"
 
 CONEXOES_SIMULTANEAS = 10  
-MODO_TESTE = False
+MODO_TESTE = False # Mude para True para testar apenas as 2 primeiras páginas da listagem
 # ---------------------------------------------
 
+URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 def obter_servico_google_drive():
-    """Autentica na API do Google usando a variável de ambiente do GitHub."""
     dados_chave_json = os.environ.get("GOOGLE_DRIVE_JSON")
     if not dados_chave_json:
         raise Exception("❌ Erro: A variável de ambiente GOOGLE_DRIVE_JSON não foi encontrada.")
-        
     info_credenciais = json.loads(dados_chave_json)
-    escopos = ['https://www.googleapis.com/auth/drive']
-    credenciais = Credentials.from_service_account_info(info_credenciais, scopes=escopos)
-    return build('drive', 'v3', credentials=credenciais)
+    return build('drive', 'v3', credentials=Credentials.from_service_account_info(info_credenciais, scopes=['https://www.googleapis.com/auth/drive']))
 
-def baixar_csv_do_drive(servico):
-    """Procura pelo CSV na pasta do Google Drive e baixa para a memória, tratando delimitadores e encoding."""
-    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{NOME_CSV_ORIGEM}' and trashed=false"
-    resultado = servico.files().list(q=query, fields="files(id, name)").execute()
+def baixar_arquivo_drive_se_existir(servico, nome_arquivo, formato='csv'):
+    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_arquivo}' and trashed=false"
+    resultado = servico.files().list(q=query, fields="files(id)").execute()
     arquivos = resultado.get('files', [])
-    
     if not arquivos:
-        raise Exception(f"❌ Erro: Arquivo '{NOME_CSV_ORIGEM}' não foi encontrado na pasta do Google Drive.")
-        
+        return None
+    
     file_id = arquivos[0]['id']
     requisicao = servico.files().get_media(fileId=file_id)
-    
     bytes_arquivo = io.BytesIO()
     baixador = MediaIoBaseDownload(bytes_arquivo, requisicao)
     concluido = False
     while not concluido:
         _, concluido = baixador.next_chunk()
-        
     bytes_arquivo.seek(0)
     
-    # Tratamento robusto para garantir a leitura completa de todas as linhas do CSV
     try:
-        return pd.read_csv(bytes_arquivo, sep=';', encoding='utf-8')
-    except UnicodeDecodeError:
+        if formato == 'csv':
+            return pd.read_csv(bytes_arquivo, sep=';', encoding='utf-8')
+        else:
+            return pd.read_excel(bytes_arquivo, sheet_name=None)
+    except Exception:
         bytes_arquivo.seek(0)
-        return pd.read_csv(bytes_arquivo, sep=';', encoding='latin-1')
+        if formato == 'csv':
+            return pd.read_csv(bytes_arquivo, sep=';', encoding='latin-1')
+        return None
 
-def salvar_excel_no_drive(servico, df_principal, df_fato):
-    """Gera o arquivo Excel em memória e envia/atualiza no Google Drive."""
-    output_excel = io.BytesIO()
-    with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-        df_principal.to_excel(writer, sheet_name='Licitacoes_Principais', index=False)
-        df_fato.to_excel(writer, sheet_name='Abas_Detalhes_Fato', index=False)
-    output_excel.seek(0)
-    
-    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{NOME_EXCEL_FINAL}' and trashed=false"
+def salvar_arquivo_no_drive(servico, nome_arquivo, conteudo_bytes, mimetype):
+    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_arquivo}' and trashed=false"
     resultado = servico.files().list(q=query, fields="files(id)").execute()
     arquivos = resultado.get('files', [])
     
-    midia = MediaIoBaseUpload(
-        output_excel, 
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 
-        resumable=True
-    )
-    
+    midia = MediaIoBaseUpload(conteudo_bytes, mimetype=mimetype, resumable=True)
     if arquivos:
-        file_id = arquivos[0]['id']
-        servico.files().update(fileId=file_id, media_body=midia).execute()
-        print(f" Planilha '{NOME_EXCEL_FINAL}' atualizada com sucesso no Google Drive!")
+        servico.files().update(fileId=arquivos[0]['id'], media_body=midia).execute()
     else:
-        metadados_arquivo = {
-            'name': NOME_EXCEL_FINAL,
-            'parents': [ID_PASTA_GOOGLE_DRIVE]
-        }
-        servico.files().create(body=metadados_arquivo, media_body=midia, fields='id').execute()
-        print(f" Planilha '{NOME_EXCEL_FINAL}' criada com sucesso no Google Drive!")
+        metadados = {'name': nome_arquivo, 'parents': [ID_PASTA_GOOGLE_DRIVE]}
+        servico.files().create(body=metadados, media_body=midia).execute()
+
+def descobrir_total_itens_e_paginas():
+    """Acessa a página 1 para identificar dinamicamente o total de itens no mural."""
+    url = f"{URL_BASE_MURAL}?page=1&per-page=30"
+    res = requests.get(url, headers=HEADERS, timeout=20)
+    if res.status_code != 200:
+        raise Exception("❌ Não foi possível acessar o Mural do TCM-PA para ler o total de itens.")
+    
+    soup = BeautifulSoup(res.text, 'html.parser')
+    texto_pagina = soup.get_text()
+    
+    match = re.search(r"A exibir\s+\d+-\d+\s+de\s+([\d\.]+)\s+itens", texto_pagina, re.IGNORECASE)
+    if match:
+        total_texto = match.group(1).replace(".", "")
+        total_itens = int(total_texto)
+        total_paginas = math.ceil(total_itens / 30)
+        print(f"📊 Total de Itens identificados no TCM-PA: {total_itens} ({total_paginas} páginas)")
+        return total_paginas
+    else:
+        print("⚠️ Aviso: Texto de paginação não localizado. Usando contingência padrão de páginas.")
+        return 5000 
+
+def raspar_pagina_listagem(num_pagina):
+    """Raspa a tabela de uma página específica da listagem do mural."""
+    url = f"{URL_BASE_MURAL}?page={num_pagina}&per-page=30"
+    linhas_coletadas = []
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=20)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            tabela = soup.find('table')
+            if tabela:
+                corpo = tabela.find('tbody')
+                if corpo:
+                    for tr in corpo.find_all('tr'):
+                        tds = tr.find_all('td')
+                        if len(tds) >= 10:
+                            link_tag = tds[1].find('a') # Coluna 'Número' contém o ID/link
+                            if link_tag and link_tag.get('href'):
+                                link_ficha = link_tag['href']
+                                if not link_ficha.startswith('http'):
+                                    link_ficha = "https://www.tcmpa.tc.br" + link_ficha
+                                
+                                linhas_coletadas.append({
+                                    "Legislação": tds[0].get_text(strip=True),
+                                    "Número": tds[1].get_text(strip=True),
+                                    "Link_Ficha": link_ficha,
+                                    "Modalidade": tds[2].get_text(strip=True),
+                                    "Tipo": tds[3].get_text(strip=True),
+                                    "Objeto": tds[4].get_text(strip=True),
+                                    "Abertura": tds[5].get_text(strip=True),
+                                    "Publicação": tds[6].get_text(strip=True),
+                                    "Município": tds[7].get_text(strip=True),
+                                    "Órgão": tds[8].get_text(strip=True),
+                                    "Situação": tds[9].get_text(strip=True)
+                                })
+    except Exception:
+        pass
+    return linhas_coletadas
 
 def extrair_campo_limpo(texto_completo, termo_alvo):
-    """Extrai informações específicas baseadas em palavras-chave âncoras na página."""
     ancoras = [
         "Nº do Processo Administrativo", "Legislação Aplicável", "Modalidade", "Tipo", 
         "Regime", "Critério de Avaliação", "Elemento de Despesa", "Local de Abertura", 
@@ -99,65 +141,38 @@ def extrair_campo_limpo(texto_completo, termo_alvo):
     ]
     texto_norm = " ".join(texto_completo.split())
     termo_norm = " ".join(termo_alvo.split())
-    
-    if termo_norm not in texto_norm:
-        return ""
+    if termo_norm not in texto_norm: return ""
     try:
         pos_termo = texto_norm.find(termo_norm)
         sub_texto = texto_norm[pos_termo + len(termo_norm):].strip()
-        if sub_texto.startswith(":"):
-            sub_texto = sub_texto[1:].strip()
+        if sub_texto.startswith(":"): sub_texto = sub_texto[1:].strip()
         menor_indice = len(sub_texto)
         for ancora in ancoras:
             ancora_norm = " ".join(ancora.split())
             if ancora_norm != termo_norm and ancora_norm in sub_texto:
                 idx = sub_texto.find(ancora_norm)
-                if 0 <= idx < menor_indice:
-                    menor_indice = idx
-        valor_final = sub_texto[:menor_indice].strip()
-        return valor_final.strip(" >:-#\t\r")
-    except:
-        return ""
+                if 0 <= idx < menor_indice: menor_indice = idx
+        return sub_texto[:menor_indice].strip(" >:-#\t\r")
+    except: return ""
 
 def quebrar_bloco_contrato(texto_bloco):
-    """Processa blocos de texto contendo informações contratuais."""
-    info = {
-        "Contrato_Numero": "", "Contrato_Valor": "", "Contrato_Data_Cadastro": "",
-        "Contrato_Contratante": "", "Contrato_Contratado": "", "Contrato_Vigencia_Inicio": "",
-        "Contrato_Vigencia_Fim": "", "Contrato_Aditivos_Info": "", "Contrato_Outros_Documentos": ""
-    }
-    texto_bloco_norm = " ".join(texto_bloco.split())
-    
-    match_num = re.search(r"(Contrato\s+n[°º\.]*.*?)(?=R\$\s*[\d\.,]+|$)", texto_bloco_norm, re.IGNORECASE)
-    if match_num: info["Contrato_Numero"] = match_num.group(1).strip()
-
-    match_vlr = re.search(r"(R\$\s*[\d\.,]+)", texto_bloco_norm)
-    if match_vlr: info["Contrato_Valor"] = match_vlr.group(1).strip()
-
-    match_data_cad = re.search(r"([\d/]{10}\s+[\d:]{5})", texto_bloco_norm)
-    if match_data_cad: info["Contrato_Data_Cadastro"] = match_data_cad.group(1).strip()
-
-    if "CONTRATANTE" in texto_bloco_norm:
-        info["Contrato_Contratante"] = texto_bloco_norm.split("CONTRATANTE")[-1].split("CONTRATADO")[0].strip(" :")
-    
-    if "CONTRATADO" in texto_bloco_norm:
-        info["Contrato_Contratado"] = texto_bloco_norm.split("CONTRATADO")[-1].split("VIGÊNCIA")[0].strip(" :")
-
-    match_ini = re.search(r"INÍCIO\s*([\d/]+)", texto_bloco_norm, re.IGNORECASE)
-    match_fim = re.search(r"FIM\s*([\d/]+)", texto_bloco_norm, re.IGNORECASE)
-    if match_ini: info["Contrato_Vigencia_Inicio"] = match_ini.group(1).strip()
-    if match_fim: info["Contrato_Vigencia_Fim"] = match_fim.group(1).strip()
-
-    if "ADITIVOS" in texto_bloco_norm:
-        info["Contrato_Aditivos_Info"] = texto_bloco_norm.split("ADITIVOS")[-1].split("OUTROS DOCUMENTOS")[0].strip(" :")
-
-    if "OUTROS DOCUMENTOS" in texto_bloco_norm:
-        info["Contrato_Outros_Documentos"] = texto_bloco_norm.split("OUTROS DOCUMENTOS")[-1].strip(" :")
-
+    info = {"Contrato_Numero": "", "Contrato_Valor": "", "Contrato_Data_Cadastro": "", "Contrato_Contratante": "", "Contrato_Contratado": "", "Contrato_Vigencia_Inicio": "", "Contrato_Vigencia_Fim": "", "Contrato_Aditivos_Info": "", "Contrato_Outros_Documentos": ""}
+    texto_norm = " ".join(texto_bloco.split())
+    m_num = re.search(r"(Contrato\s+n[°º\.]*.*?)(?=R\$\s*[\d\.,]+|$)", texto_norm, re.IGNORECASE)
+    if m_num: info["Contrato_Numero"] = m_num.group(1).strip()
+    m_vlr = re.search(r"(R\$\s*[\d\.,]+)", texto_norm)
+    if m_vlr: info["Contrato_Valor"] = m_vlr.group(1).strip()
+    m_dt = re.search(r"([\d/]{10}\s+[\d:]{5})", texto_norm)
+    if m_dt: info["Contrato_Data_Cadastro"] = m_dt.group(1).strip()
+    if "CONTRATANTE" in texto_norm: info["Contrato_Contratante"] = texto_norm.split("CONTRATANTE")[-1].split("CONTRATADO")[0].strip(" :")
+    if "CONTRATADO" in texto_norm: info["Contrato_Contratado"] = texto_norm.split("CONTRATADO")[-1].split("VIGÊNCIA")[0].strip(" :")
+    m_ini = re.search(r"INÍCIO\s*([\d/]+)", texto_norm, re.IGNORECASE)
+    m_fim = re.search(r"FIM\s*([\d/]+)", texto_norm, re.IGNORECASE)
+    if m_ini: info["Contrato_Vigencia_Inicio"] = m_ini.group(1).strip()
+    if m_fim: info["Contrato_Vigencia_Fim"] = m_fim.group(1).strip()
     return info
 
-def raspar_ficha(linha_dados):
-    """Efetua a raspagem de dados de uma única URL correspondente a uma licitação."""
+def raspar_ficha_detalhes(linha_dados):
     link = linha_dados.get("Link_Ficha", "")
     detalhes = {
         "Nº do Processo Administrativo": "", "Legislação Aplicável": "", "Regime": "", "Critério de Avaliação": "", 
@@ -166,48 +181,20 @@ def raspar_ficha(linha_dados):
         "Nas aquisições, há prioridade para as microempresas regionais ou locais?": "",
         "Contratação com utilização de recursos federais advindos de transferências voluntárias?": "",
         "Exercício": "", "Homologação": "", "Caráter Sigiloso": "", "Será Firmado Contrato": "",
-        "Total_Documentos": "0", "Total_Publicidades": "0", "Total_Participantes": "0",
-        "Total_Lotes_Itens": "0", "Total_Contratos": "0", "Total_Aditivos": "0"
+        "Total_Documentos": "0", "Total_Publicidades": "0", "Total_Participantes": "0", "Total_Lotes_Itens": "0", "Total_Contratos": "0", "Total_Aditivos": "0"
     }
-    linhas_subtabela = []
+    sub_linhas = []
+    if not link or pd.isna(link): return linha_dados, sub_linhas
 
-    if not link or pd.isna(link) or not str(link).startswith("http"):
-        linha_dados.update(detalhes)
-        return linha_dados, linhas_subtabela
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    mapeamento_site = {
-        "Nº do Processo Administrativo": "Nº do Processo Administrativo", 
-        "Legislação Aplicável": "Legislação Aplicável",
-        "Regime": "Regime", 
-        "Critério de Avaliação": "Critério de Avaliação", 
-        "Elemento de Despesa": "Elemento de Despesa",
-        "Local de Abertura": "Local de Abertura", 
-        "Observação": "Observação", 
-        "Há itens exclusivos para EPP/ME?": "Há itens exclusivos para EPP/ME?",
-        "Há lote de participação para EPP/ME?": "Há lote de participação para EPP/ME?", 
-        "Percentual de participação para EPP/ME": "Percentual de participação para EPP/ME",
-        "Nas aquisições, há prioridade para as microempresas regionais ou locais?": "Nas aquisições, há prioridade para as microempresas regionais ou locais?",
-        "Contratação com utilização de recursos federais advindos de transferências voluntárias?": "Contratação com utilização de recursos federais advindos de transferências voluntárias?",
-        "Exercício": "Exercício", 
-        "Homologação": "Homologação", 
-        "Caráter Sigiloso": "Caráter Sigiloso", 
-        "Será Firmado Contrato": "Será Firmado Contrato"
-    }
-
-    for tentativa in range(3):
+    for _ in range(2):
         try:
-            response = requests.get(link, headers=headers, timeout=20)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                texto_pagina = soup.get_text(" ", strip=True)
+            res = requests.get(link, headers=HEADERS, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                txt_pag = soup.get_text(" ", strip=True)
+                for k in detalhes.keys():
+                    if "Total_" not in k: detalhes[k] = extrair_campo_limpo(txt_pag, k)
                 
-                for termo_site, coluna_excel in mapeamento_site.items():
-                    detalhes[coluna_excel] = extrair_campo_limpo(texto_pagina, termo_site)
-
                 badges = soup.find_all('span', class_='badge')
                 if len(badges) >= 6:
                     detalhes["Total_Documentos"] = badges[0].get_text(strip=True)
@@ -217,147 +204,124 @@ def raspar_ficha(linha_dados):
                     detalhes["Total_Contratos"] = badges[4].get_text(strip=True)
                     detalhes["Total_Aditivos"] = badges[5].get_text(strip=True)
 
-                # 1. Documentos
-                div_docs = soup.find('div', id='documentos')
-                if div_docs:
-                    for tr in div_docs.find_all('tr'):
-                        tds = tr.find_all('td')
-                        if len(tds) >= 3:
-                            linhas_subtabela.append({
-                                "Link_Ficha": link, "Origem_Aba": "Documentos",
-                                "Propriedade_Coluna": tds[1].get_text(strip=True),
-                                "Valor_Resultado": f"{tds[2].get_text(strip=True)} ({tds[3].get_text(strip=True) if len(tds) > 3 else ''})"
-                            })
+                # Abas secundárias (Documentos / Publicidades / Participantes / Contratos)
+                for aba_id, nome_aba in [('documentos', 'Documentos'), ('publicidades', 'Publicidades')]:
+                    div = soup.find('div', id=aba_id)
+                    if div:
+                        for tr in div.find_all('tr'):
+                            tds = tr.find_all('td')
+                            if len(tds) >= 3:
+                                sub_linhas.append({"Link_Ficha": link, "Origem_Aba": nome_aba, "Propriedade_Coluna": tds[1].get_text(strip=True), "Valor_Resultado": tds[2].get_text(strip=True)})
 
-                # 2. Publicidades
-                div_pub = soup.find('div', id='publicidades')
-                if div_pub:
-                    for tr in div_pub.find_all('tr'):
-                        tds = tr.find_all('td')
-                        if len(tds) >= 3:
-                            linhas_subtabela.append({
-                                "Link_Ficha": link, "Origem_Aba": "Publicidades",
-                                "Propriedade_Coluna": tds[1].get_text(strip=True),
-                                "Valor_Resultado": f"{tds[2].get_text(strip=True)} ({tds[3].get_text(strip=True) if len(tds) > 3 else ''})"
-                            })
-
-                # 3. Participantes
                 div_part = soup.find('div', id='participantes')
                 if div_part:
-                    for block in div_part.find_all(['div', 'tr']):
-                        txt = block.get_text(" ", strip=True)
-                        if any(k in txt for k in ["LTDA", "EIRELI", "S.A.", "SA", "CNPJ", "CPF", "/"]):
-                            limpo = " ".join(txt.split())
-                            if limpo and "Rastrear" not in limpo:
-                                prop = "Participante"
-                                if "CNPJ" in limpo:
-                                    partes = limpo.split("CNPJ")
-                                    prop = partes[0].strip()
-                                    limpo = "CNPJ" + partes[1]
-                                    
-                                linhas_subtabela.append({
-                                    "Link_Ficha": link, "Origem_Aba": "Participantes",
-                                    "Propriedade_Coluna": prop, "Valor_Resultado": limpo
-                                })
+                    for b in div_part.find_all(['div', 'tr']):
+                        t = " ".join(b.get_text(" ", strip=True).split())
+                        if any(k in t for k in ["LTDA", "EIRELI", "S.A.", "CNPJ", "CPF"]):
+                            sub_linhas.append({"Link_Ficha": link, "Origem_Aba": "Participantes", "Propriedade_Coluna": "Participante", "Valor_Resultado": t})
 
-                # 4. Contratos
                 div_cont = soup.find('div', id='contratos')
                 if div_cont:
-                    paineis_completos = div_cont.find_all('div', class_=lambda x: x and 'panel' in x and 'panel-body' not in x and 'panel-heading' not in x)
-                    if not paineis_completos:
-                        paineis_completos = div_cont.find_all('div', class_='panel-default') or div_cont.find_all('div', class_='panel')
-                    itens = [p.get_text(" ", strip=True) for p in paineis_completos if p.get_text(strip=True)]
-                    if not itens:
-                        itens = [div_cont.get_text(" ", strip=True)]
-                    for item in list(set(itens)):
-                        base_contrato = {
-                            "Link_Ficha": link, "Origem_Aba": "Contratos",
-                            "Propriedade_Coluna": "Ficha Contratual Completa", "Valor_Resultado": item
-                        }
-                        base_contrato.update(quebrar_bloco_contrato(item))
-                        linhas_subtabela.append(base_contrato)
-
-                # 5. Aditivos
-                div_adit = soup.find('div', id='aditivos')
-                if div_adit:
-                    itens = [tr.get_text(" ", strip=True) for tr in div_adit.find_all('tr') if tr.get_text(strip=True)]
-                    if not itens:
-                        itens = [d.get_text(" ", strip=True) for d in div_adit.find_all('div', class_='panel-body')]
-                    for item in list(set(itens)):
-                        linhas_subtabela.append({
-                            "Link_Ficha": link, "Origem_Aba": "Aditivos",
-                            "Propriedade_Coluna": "Resumo Aditivo", "Valor_Resultado": item
-                        })
-
+                    paineis = div_cont.find_all('div', class_='panel') or [div_cont]
+                    for p in paineis:
+                        txt_c = p.get_text(" ", strip=True)
+                        if txt_c:
+                            base_c = {"Link_Ficha": link, "Origem_Aba": "Contratos", "Propriedade_Coluna": "Ficha Completa", "Valor_Resultado": txt_c}
+                            base_c.update(quebrar_bloco_contrato(txt_c))
+                            sub_linhas.append(base_c)
+                
                 linha_dados.update(detalhes)
-                return linha_dados, linhas_subtabela
-            else:
-                time.sleep(2)
+                return linha_dados, sub_linhas
         except Exception:
-            time.sleep(2)
-            
-    # Retorna os dados originais mesmo que a requisição venha a falhar para evitar perda de linhas
+            time.sleep(1)
     linha_dados.update(detalhes)
-    return linha_dados, linhas_subtabela
+    return linha_dados, sub_linhas
 
 def principal():
-    print("Conectando ao Google Drive na nuvem...")
-    servico_drive = obter_servico_google_drive()
+    print("🔄 Conectando ao Google Drive...")
+    servico = obter_servico_google_drive()
     
-    print("Buscando e baixando arquivo original CSV...")
-    df = baixar_csv_do_drive(servico_drive)
-    
-    # Remove linhas completamente nulas caso existam no arquivo
-    df = df.dropna(subset=['Link_Ficha'])
-    lista_linhas = df.to_dict(orient='records')
-    
+    # 1. Descobrir total de páginas dinamicamente no site do TCM
+    total_paginas = descobrir_total_itens_e_paginas()
     if MODO_TESTE:
-        print("▶️ MODO TESTE ATIVADO: Processando apenas 5 linhas.")
-        lista_linhas = lista_linhas[:5]
-        
-    total_tarefas = len(lista_linhas)
-    base_principal = []
-    base_detalhes_fato = []
-    processados = 0
+        total_paginas = 2
     
-    print(f"Iniciando a extração de {total_tarefas} fichas de licitação...")
+    # 2. Carregar o histórico existente no Drive para evitar retrabalho estrutural
+    df_csv_antigo = baixar_arquivo_drive_se_existir(servico, NOME_CSV_ORIGEM, 'csv')
+    links_ja_mapeados = set(df_csv_antigo['Link_Ficha'].tolist()) if df_csv_antigo is not None else set()
     
-    # Uso do ThreadPoolExecutor garantindo o fluxo contínuo até o fim do arquivo
+    print(f"🔎 Varrendo as {total_paginas} páginas do mural em busca de novas licitações...")
+    novas_linhas_mural = []
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
-        futuros = {executor.submit(raspar_ficha, linha): linha for linha in lista_linhas}
-        for futuro in concurrent.futures.as_completed(futuros):
-            processados += 1
-            try:
-                res_principal, res_fato = futuro.result()
-                base_principal.append(res_principal)
-                base_detalhes_fato.extend(res_fato)
-            except Exception as e:
-                print(f"⚠️ Erro ao processar uma das linhas: {e}")
-            
-            if processados % 20 == 0 or processados == total_tarefas:
-                print(f"Progresso: {processados}/{total_tarefas} fichas analisadas...")
-                
-    df_principal = pd.DataFrame(base_principal)
-    df_fato = pd.DataFrame(base_detalhes_fato)
+        paginas_alvo = range(1, total_paginas + 1)
+        resultados = executor.map(raspar_pagina_listagem, paginas_alvo)
+        for res_pag in resultados:
+            novas_linhas_mural.extend(res_pag)
+
+    if not novas_linhas_mural:
+        print("❌ Nenhuma linha capturada do portal. Abortando para proteger os dados anteriores.")
+        return
+
+    df_mural_atualizado = pd.DataFrame(novas_linhas_mural).drop_duplicates(subset=['Link_Ficha'])
     
-    colunas_ordenadas = [
-        "Link_Ficha", "Origem_Aba", "Propriedade_Coluna", "Valor_Resultado",
-        "Contrato_Numero", "Contrato_Valor", "Contrato_Data_Cadastro", 
-        "Contrato_Contratante", "Contrato_Contratado", 
-        "Contrato_Vigencia_Inicio", "Contrato_Vigencia_Fim", 
-        "Contrato_Aditivos_Info", "Contrato_Outros_Documentos"
-    ]
+    # Salvar a nova lista consolidada no formato CSV de origem
+    output_csv = io.StringIO()
+    df_mural_atualizado.to_csv(output_csv, sep=';', index=False, encoding='utf-8')
+    csv_bytes = io.BytesIO(output_csv.getvalue().encode('utf-8'))
+    salvar_arquivo_no_drive(servico, NOME_CSV_ORIGEM, csv_bytes, 'text/csv')
+    print(f"💾 Arquivo '{NOME_CSV_ORIGEM}' atualizado e salvo no Drive.")
+
+    # 3. Filtrar apenas o que é REALMENTE novo para extrair os detalhes
+    fichas_para_detalhar = [r for r in novas_linhas_mural if r['Link_Ficha'] not in links_ja_mapeados]
+    print(f"🚀 {len(fichas_para_detalhar)} novas licitações encontradas para detalhamento profundo.")
     
-    for col in colunas_ordenadas:
-        if col not in df_fato.columns:
-            df_fato[col] = ""
-            
-    if not df_fato.empty:
-        df_fato = df_fato[colunas_ordenadas]
+    dict_excel_antigo = baixar_arquivo_drive_se_existir(servico, NOME_EXCEL_FINAL, 'excel')
+    df_principal_acumulado = dict_excel_antigo['Licitacoes_Principais'] if dict_excel_antigo and 'Licitacoes_Principais' in dict_excel_antigo else pd.DataFrame()
+    df_fato_acumulado = dict_excel_antigo['Abas_Detalhes_Fato'] if dict_excel_antigo and 'Abas_Detalhes_Fato' in dict_excel_antigo else pd.DataFrame()
+
+    if fichas_para_detalhar:
+        novas_principais = []
+        novas_fato = []
+        processados = 0
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
+            futuros = {executor.submit(raspar_ficha_detalhes, f): f for f in fichas_para_detalhar}
+            for futuro in concurrent.futures.as_completed(futuros):
+                processados += 1
+                try:
+                    p_res, f_res = futuro.result()
+                    novas_principais.append(p_res)
+                    novas_fato.extend(f_res)
+                except Exception:
+                    pass
+                if processados % 50 == 0 or processados == len(fichas_para_detalhar):
+                    print(f"   Progresso Detalhamento: {processados}/{len(fichas_para_detalhar)} fichas...")
+
+        df_novas_p = pd.DataFrame(novas_principais)
+        df_novas_f = pd.DataFrame(novas_fato)
+        
+        df_principal_acumulado = pd.concat([df_principal_acumulado, df_novas_p], ignore_index=True).drop_duplicates(subset=['Link_Ficha'])
+        df_fato_acumulado = pd.concat([df_fato_acumulado, df_novas_f], ignore_index=True)
+    else:
+        print("☕ Nenhuma nova ficha encontrada para detalhar hoje. Apenas sincronizando estruturas.")
+
+    # Ajuste de colunas da tabela fato
+    colunas_fato = ["Link_Ficha", "Origem_Aba", "Propriedade_Coluna", "Valor_Resultado", "Contrato_Numero", "Contrato_Valor", "Contrato_Data_Cadastro", "Contrato_Contratante", "Contrato_Contratado", "Contrato_Vigencia_Inicio", "Contrato_Vigencia_Fim"]
+    for c in colunas_fato:
+        if c not in df_fato_acumulado.columns: df_fato_acumulado[c] = ""
+    if not df_fato_acumulado.empty:
+        df_fato_acumulado = df_fato_acumulado[colunas_fato]
+
+    # Guardar Excel relacional com as duas abas atualizadas no Drive
+    output_excel = io.BytesIO()
+    with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+        df_principal_acumulado.to_excel(writer, sheet_name='Licitacoes_Principais', index=False)
+        df_fato_acumulado.to_excel(writer, sheet_name='Abas_Detalhes_Fato', index=False)
+    output_excel.seek(0)
     
-    print("Salvando resultado diretamente no Google Drive...")
-    salvar_excel_no_drive(servico_drive, df_principal, df_fato)
-    print("✅ PROCESSO CONCLUÍDO COM SUCESSO NA NUVEM!")
+    salvar_arquivo_no_drive(servico, NOME_EXCEL_FINAL, output_excel, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    print("✅ PROCESSO CONCLUÍDO COM SUCESSO COLETANDO DIRETAMENTE DO SITE!")
 
 if __name__ == "__main__":
     principal()
