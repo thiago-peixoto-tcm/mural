@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 
 CONEXOES_SIMULTANEAS = 3   
-MODO_TESTE = True          # Deixe True para testar. Depois mude para False.
+MODO_TESTE = True          # Deixe True para validar o primeiro teste.
 # ---------------------------------------------
 
 URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
@@ -31,26 +31,18 @@ def obter_servicos_google():
     creds = Credentials.from_service_account_info(info_credenciais, scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
     return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
 
-def buscar_ou_criar_google_sheet(servico_drive, nome_planilha):
-    """Busca uma planilha pelo nome na pasta ou cria uma nova como planilha nativa do Google (sem gastar cota)"""
+def obter_id_google_sheet(servico_drive, nome_planilha):
+    """Busca o ID da planilha pré-criada pelo usuário na pasta"""
     query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_planilha}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
     resultado = servico_drive.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     
     if arquivos:
         return arquivos[0]['id']
-    
-    # Se não existir, cria um Google Sheets nativo herda a cota da pasta mãe
-    metadados = {
-        'name': nome_planilha,
-        'mimeType': 'application/vnd.google-apps.spreadsheet',
-        'parents': [ID_PASTA_GOOGLE_DRIVE]
-    }
-    nova_planilha = servico_drive.files().create(body=metadados, fields='id', supportsAllDrives=True).execute()
-    return nova_planilha.get('id')
+    else:
+        raise Exception(f"❌ Erro Crítico: A planilha '{nome_planilha}' não foi encontrada na sua pasta do Drive. Crie uma planilha em branco com este nome exato no seu Drive primeiro.")
 
 def ler_dados_google_sheet(servico_sheets, spreadsheet_id):
-    """Lê todas as linhas de uma planilha do Google Sheets"""
     try:
         resultado = servico_sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
         valores = resultado.get('values', [])
@@ -61,15 +53,11 @@ def ler_dados_google_sheet(servico_sheets, spreadsheet_id):
         return pd.DataFrame()
 
 def atualizar_dados_google_sheet(servico_sheets, spreadsheet_id, df):
-    """Limpa a planilha e escreve o DataFrame atualizado nela"""
-    # Converter tudo para string para evitar erros de JSON
     df_strings = df.fillna("").astype(str)
     valores = [df_strings.columns.tolist()] + df_strings.values.tolist()
     
-    # Limpar dados antigos
+    # Limpa e atualiza os dados na planilha existente do usuário
     servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
-    
-    # Escrever novos dados
     corpo = {'values': valores}
     servico_sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
@@ -200,9 +188,9 @@ def principal():
     print("🔄 Conectando ao Google Drive e Sheets...")
     servico_drive, servico_sheets = obter_servicos_google()
     
-    # Identificar IDs das planilhas nativas do Google Sheets
-    id_sheet_principal = buscar_ou_criar_google_sheet(servico_drive, "Base_Licitacoes_Principais")
-    id_sheet_fato = buscar_ou_criar_google_sheet(servico_drive, "Abas_Detalhes_Fato")
+    # Obtém os IDs dos arquivos que VOCÊ criou no Drive manualmente
+    id_sheet_principal = obter_id_google_sheet(servico_drive, "Base_Licitacoes_Principais")
+    id_sheet_fato = obter_id_google_sheet(servico_drive, "Abas_Detalhes_Fato")
     
     total_paginas = descobrir_total_itens_e_paginas()
     if MODO_TESTE:
@@ -245,11 +233,10 @@ def principal():
         df_principal_acumulado = df_mural_atualizado
         df_fato_acumulado = df_antigo_f
 
-    # Gravar diretamente no Google Sheets nativo (Cota Livre)
-    print("💾 Gravando dados diretamente no Google Sheets...")
+    print("💾 Gravando dados diretamente no Google Sheets existente...")
     atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_acumulado)
     atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_fato_acumulado)
-    print("✅ PROCESSO CONCLUÍDO COM SUCESSO NO GOOGLE SHEETS NATIVO!")
+    print("✅ PROCESSO CONCLUÍDO COM SUCESSO!")
 
 if __name__ == "__main__":
     principal()
