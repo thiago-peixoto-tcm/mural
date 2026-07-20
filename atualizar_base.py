@@ -150,22 +150,18 @@ def raspar_ficha_detalhes(linha_dados):
             soup = BeautifulSoup(res.text, 'html.parser')
             txt_pag = soup.get_text(" ", strip=True)
             
-            # 1. PEGA O EXERCÍCIO PRIMEIRO (Coluna S)
             ano_exercicio = extrair_campo_limpo(txt_pag, "Exercício")
             detalhes["Exercício"] = ano_exercicio
             
-            # FILTRO CRÍTICO: Se o exercício for explicitamente inferior a 2024, para a raspagem profunda aqui!
             try:
                 ano_int = int(re.sub(r'\D', '', ano_exercicio))
             except:
-                ano_int = 2024 # Na dúvida de texto vazio, assume 2024 para auditar
+                ano_int = 2024 
                 
             if ano_int < 2024:
-                # Retorna apenas o Exercício básico preenchido para marcar na tabela e economizar tempo
                 linha_dados.update(detalhes)
                 return linha_dados, sub_linhas
 
-            # 2. SE FOR 2024+, CONTINUA A EXTRAÇÃO COMPLETA DAS ABAS FATO
             for k in detalhes.keys():
                 if "Total_" not in k and k != "Exercício": 
                     detalhes[k] = extrair_campo_limpo(txt_pag, k)
@@ -213,76 +209,95 @@ def principal():
         
     df_antigo_p = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
     
-    # Identificar links que já estão na planilha com Exercício antigo (< 2024) para nem encostar neles
-    links_ignorados_historico = set()
-    if not df_antigo_p.empty and 'Exercício' in df_antigo_p.columns:
-        for _, row in df_antigo_p.iterrows():
-            ex_val = str(row['Exercício']).strip()
-            if ex_val.isdigit() and int(ex_val) < 2024:
-                links_ignorados_historico.add(row['Link_Ficha'])
-                
-    links_ja_mapeados_total = set(df_antigo_p['Link_Ficha'].tolist()) if not df_antigo_p.empty else set()
-    df_antigo_f = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
-    
-    print(f"🔎 Atribuição 1: Carregando todas as {total_paginas} páginas do mural para a Base Principal...")
+    # ----------------------------------------------------
+    # FASE 1: EXTRAIR LISTAGEM DO PORTAL E SALVAR IMEDIATAMENTE
+    # ----------------------------------------------------
+    print(f"🔎 FASE 1: Carregando todas as {total_paginas} páginas do mural para a Base Principal...")
     novas_linhas_mural = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
         resultados = executor.map(raspar_pagina_listagem, range(1, total_paginas + 1))
         for res_pag in resultados: novas_linhas_mural.extend(res_pag)
 
     if not novas_linhas_mural:
-        print("❌ Nenhuma linha capturada da listagem. Abortando.")
+        print("❌ Nenhuma linha capturada da listagem. Abortando FASE 1.")
         return
 
     df_mural_atualizado = pd.DataFrame(novas_linhas_mural).drop_duplicates(subset=['Link_Ficha'])
     
-    # Fila de processamento: links novos ou links que não foram mapeados como < 2024 anteriormente
-    fichas_para_analisar = [r for r in novas_linhas_mural if r['Link_Ficha'] not in links_ignorados_historico and r['Link_Ficha'] not in links_ja_mapeados_total]
+    if not df_antigo_p.empty:
+        df_principal_acumulado = pd.concat([df_antigo_p, df_mural_atualizado], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='first')
+    else:
+        df_principal_acumulado = df_mural_atualizado
+
+    print("💾 [SALVAMENTO PARCIAL] Gravando a listagem atualizada na planilha Base_Licitacoes_Principais...")
+    atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_acumulado)
+    print("✅ FASE 1 CONCLUÍDA! Planilha principal atualizada com sucesso no Drive.")
+
+    # ----------------------------------------------------
+    # FASE 2: DETALHAMENTO COM SALVAMENTO EM LOTES INCREMENTAIS
+    # ----------------------------------------------------
+    print("🚀 FASE 2: Iniciando a checagem de detalhes e filtragem por Exercício...")
     
-    print(f"🚀 Atribuição 2: Analisando {len(fichas_para_analisar)} novas fichas capturadas...")
+    # Re-lemos a planilha salva para garantir que trabalhamos com o estado atual do Drive
+    df_principal_atualizada_drive = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
+    df_antigo_f = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
+    
+    # Filtra o que realmente precisa abrir (Inéditos ou registros sem Exercício mapeado ainda)
+    fichas_para_analisar = []
+    links_com_exercicio_antigo = set()
+    
+    if 'Exercício' in df_principal_atualizada_drive.columns:
+        for _, row in df_principal_atualizada_drive.iterrows():
+            ex_val = str(row['Exercício']).strip()
+            if ex_val.isdigit() and int(ex_val) < 2024:
+                links_com_exercicio_antigo.add(row['Link_Ficha'])
+                
+    # Varre a lista recém-baixada do mural e extrai o que precisa de auditoria profunda
+    links_ja_detalhados_fato = set(df_antigo_f['Link_Ficha'].tolist()) if not df_antigo_f.empty else set()
+    
+    for item in novas_linhas_mural:
+        link = item['Link_Ficha']
+        if link not in links_com_exercicio_antigo and link not in links_ja_detalhados_fato:
+            fichas_para_analisar.append(item)
+
+    print(f"📋 Encontradas {len(fichas_para_analisar)} fichas candidatas para checar detalhes de 2024+.")
     
     if fichas_para_analisar:
-        novas_p, novas_f = [], []
-        processados = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
-            futuros = {executor.submit(raspar_ficha_detalhes, f): f for f in fichas_para_analisar}
-            for futuro in concurrent.futures.as_completed(futuros):
-                processados += 1
-                p_res, f_res = futuro.result()
-                novas_p.append(p_res)
-                novas_f.extend(f_res)
-                if processados % 50 == 0 or processados == len(fichas_para_analisar):
-                    print(f"   Progresso Fichas: {processados}/{len(fichas_para_analisar)}...")
-
-        df_novas_p = pd.DataFrame(novas_p)
-        df_novas_f = pd.DataFrame(novas_f)
+        # Divide o trabalho em pequenos sub-lotes de 50 para ir salvando aos poucos no Google Drive
+        tamanho_lote = 50
+        total_fichas = len(fichas_para_analisar)
         
-        # Unir dados novos com o mapeamento limpo da listagem
-        df_mural_com_detalhes = pd.merge(df_mural_atualizado, df_novas_p, on='Link_Ficha', how='left', suffixes=('', '_detalhe'))
-        for col in df_mural_com_detalhes.columns:
-            if col.endswith('_detalhe'):
-                col_orig = col.replace('_detalhe', '')
-                df_mural_com_detalhes[col_orig] = df_mural_com_detalhes[col_orig].fillna(df_mural_com_detalhes[col])
-                df_mural_com_detalhes.drop(columns=[col], inplace=True)
-
-        if not df_antigo_p.empty:
-            df_principal_acumulado = pd.concat([df_antigo_p, df_mural_com_detalhes], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
-        else:
-            df_principal_acumulado = df_mural_com_detalhes
+        for i in range(0, total_fichas, tamanho_lote):
+            lote_atual = fichas_para_analisar[i:i+tamanho_lote]
+            print(f"📦 Processando sub-lote {i//tamanho_lote + 1} ({i} até {min(i+tamanho_lote, total_fichas)})...")
             
-        df_fato_acumulado = pd.concat([df_antigo_f, df_novas_f], ignore_index=True)
-    else:
-        print("☕ Nenhuma nova ficha pendente de análise de Exercício hoje.")
-        if not df_antigo_p.empty:
-            df_principal_acumulado = pd.concat([df_antigo_p, df_mural_atualizado], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='first')
-        else:
-            df_principal_acumulado = df_mural_atualizado
-        df_fato_acumulado = df_antigo_f
-
-    print("💾 Gravando dados finais diretamente no Google Sheets...")
-    atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_acumulado)
-    atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_fato_acumulado)
-    print("✅ PROCESSO CONCLUÍDO COM SUCESSO!")
+            novas_p_lote, novas_f_lote = [], []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
+                futuros = {executor.submit(raspar_ficha_detalhes, f): f for f in lote_atual}
+                for futuro in concurrent.futures.as_completed(futuros):
+                    p_res, f_res = futuro.result()
+                    novas_p_lote.append(p_res)
+                    novas_f_lote.extend(f_res)
+            
+            # Recarrega o estado atual das planilhas para emendar o progresso
+            df_p_atual = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
+            df_f_atual = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
+            
+            df_novas_p_df = pd.DataFrame(novas_p_lote)
+            df_novas_f_df = pd.DataFrame(novas_f_lote)
+            
+            # Merge inteligente para injetar as colunas extras (como Exercício) no lote atual
+            if not df_novas_p_df.empty:
+                df_p_atual = pd.concat([df_p_atual, df_novas_p_df], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
+                atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_p_atual)
+                
+            if not df_novas_f_df.empty:
+                df_f_atual = pd.concat([df_f_atual, df_novas_f_df], ignore_index=True)
+                atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_f_atual)
+                
+            print(f"💾 [SALVAMENTO DIRETORIO] Sub-lote gravado com sucesso no Google Sheets!")
+            
+    print("✅ PROCESSO TOTAL CONCLUÍDO COM SUCESSO!")
 
 if __name__ == "__main__":
     principal()
