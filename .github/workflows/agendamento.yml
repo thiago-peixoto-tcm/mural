@@ -32,10 +32,6 @@ jobs:
         GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
       run: python atualizar_base.py
 
-- name: Executar o Script de Raspagem - Base Principal
-      env:
-        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
-      run: python atualizar_base.py
 
     - name: Executar o Script de Detalhamento das Fichas
       env:
