@@ -54,6 +54,7 @@ def atualizar_dados_google_sheet(servico_sheets, spreadsheet_id, df):
     df_strings = df.fillna("").astype(str)
     valores = [df_strings.columns.tolist()] + df_strings.values.tolist()
     
+    # Faz uma única chamada de limpeza e regravação completa
     servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
     corpo = {'values': valores}
     servico_sheets.spreadsheets().values().update(
@@ -145,7 +146,7 @@ def raspar_ficha_detalhes(linha_dados):
     if not link or pd.isna(link): return linha_dados, sub_linhas
 
     try:
-        res = requests.get(link, headers=HEADERS, timeout=15)
+        res = requests.get(link, headers=HEADERS, timeout=12)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             txt_pag = soup.get_text(" ", strip=True)
@@ -229,74 +230,62 @@ def principal():
     else:
         df_principal_acumulado = df_mural_atualizado
 
-    print("💾 [SALVAMENTO PARCIAL] Gravando a listagem atualizada na planilha Base_Licitacoes_Principais...")
+    print("💾 Gravando a listagem atualizada na planilha Base_Licitacoes_Principais...")
     atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_acumulado)
     print("✅ FASE 1 CONCLUÍDA! Planilha principal atualizada com sucesso no Drive.")
 
     # ----------------------------------------------------
-    # FASE 2: DETALHAMENTO COM SALVAMENTO EM LOTES INCREMENTAIS
+    # FASE 2: DETALHAMENTO SEGURO (MEMÓRIA RAM + ENVIO ÚNICO)
     # ----------------------------------------------------
-    print("🚀 FASE 2: Iniciando a checagem de detalhes e filtragem por Exercício...")
+    print("🚀 FASE 2: Iniciando o detalhamento e filtragem por Exercício...")
     
-    # Re-lemos a planilha salva para garantir que trabalhamos com o estado atual do Drive
     df_principal_atualizada_drive = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
     df_antigo_f = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
     
-    # Filtra o que realmente precisa abrir (Inéditos ou registros sem Exercício mapeado ainda)
-    fichas_para_analisar = []
     links_com_exercicio_antigo = set()
-    
     if 'Exercício' in df_principal_atualizada_drive.columns:
         for _, row in df_principal_atualizada_drive.iterrows():
             ex_val = str(row['Exercício']).strip()
             if ex_val.isdigit() and int(ex_val) < 2024:
                 links_com_exercicio_antigo.add(row['Link_Ficha'])
                 
-    # Varre a lista recém-baixada do mural e extrai o que precisa de auditoria profunda
     links_ja_detalhados_fato = set(df_antigo_f['Link_Ficha'].tolist()) if not df_antigo_f.empty else set()
     
-    for item in novas_linhas_mural:
-        link = item['Link_Ficha']
-        if link not in links_com_exercicio_antigo and link not in links_ja_detalhados_fato:
-            fichas_para_analisar.append(item)
+    fichas_para_analisar = [item for item in novas_linhas_mural if item['Link_Ficha'] not in links_com_exercicio_antigo and item['Link_Ficha'] not in links_ja_detalhados_fato]
 
-    print(f"📋 Encontradas {len(fichas_para_analisar)} fichas candidatas para checar detalhes de 2024+.")
+    print(f"📋 Encontradas {len(fichas_para_analisar)} fichas para checar detalhes de 2024+.")
     
     if fichas_para_analisar:
-        # Divide o trabalho em pequenos sub-lotes de 50 para ir salvando aos poucos no Google Drive
-        tamanho_lote = 50
+        novas_p, novas_f = [], []
+        processados = 0
         total_fichas = len(fichas_para_analisar)
         
-        for i in range(0, total_fichas, tamanho_lote):
-            lote_atual = fichas_para_analisar[i:i+tamanho_lote]
-            print(f"📦 Processando sub-lote {i//tamanho_lote + 1} ({i} até {min(i+tamanho_lote, total_fichas)})...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
+            futuros = {executor.submit(raspar_ficha_detalhes, f): f for f in fichas_para_analisar}
+            for futuro in concurrent.futures.as_completed(futuros):
+                processados += 1
+                p_res, f_res = futuro.result()
+                novas_p.append(p_res)
+                novas_f.extend(f_res)
+                if processados % 100 == 0 or processados == total_fichas:
+                    print(f"   Progresso Fichas: {processados}/{total_fichas}...")
+
+        # Junta tudo em memória antes de disparar para a API do Google
+        df_novas_p_df = pd.DataFrame(novas_p)
+        df_novas_f_df = pd.DataFrame(novas_f)
+        
+        if not df_novas_p_df.empty:
+            df_principal_final = pd.concat([df_principal_atualizada_drive, df_novas_p_df], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
+            atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_final)
             
-            novas_p_lote, novas_f_lote = [], []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
-                futuros = {executor.submit(raspar_ficha_detalhes, f): f for f in lote_atual}
-                for futuro in concurrent.futures.as_completed(futuros):
-                    p_res, f_res = futuro.result()
-                    novas_p_lote.append(p_res)
-                    novas_f_lote.extend(f_res)
+        if not df_novas_f_df.empty:
+            df_fato_final = pd.concat([df_antigo_f, df_novas_f_df], ignore_index=True)
+            atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_fato_final)
             
-            # Recarrega o estado atual das planilhas para emendar o progresso
-            df_p_atual = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
-            df_f_atual = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
-            
-            df_novas_p_df = pd.DataFrame(novas_p_lote)
-            df_novas_f_df = pd.DataFrame(novas_f_lote)
-            
-            # Merge inteligente para injetar as colunas extras (como Exercício) no lote atual
-            if not df_novas_p_df.empty:
-                df_p_atual = pd.concat([df_p_atual, df_novas_p_df], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
-                atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_p_atual)
-                
-            if not df_novas_f_df.empty:
-                df_f_atual = pd.concat([df_f_atual, df_novas_f_df], ignore_index=True)
-                atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_f_atual)
-                
-            print(f"💾 [SALVAMENTO DIRETORIO] Sub-lote gravado com sucesso no Google Sheets!")
-            
+        print("💾 [SALVAMENTO FINAL] Todas as fichas gravadas no Google Sheets!")
+    else:
+        print("☕ Nenhuma nova ficha pendente para 2024+.")
+        
     print("✅ PROCESSO TOTAL CONCLUÍDO COM SUCESSO!")
 
 if __name__ == "__main__":
