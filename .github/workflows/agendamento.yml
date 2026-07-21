@@ -24,8 +24,20 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests pandas bs4 openpyxl google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client gspread
 
+
+
         
     - name: Executar o Script de Raspagem
       env:
         GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
       run: python atualizar_base.py
+
+- name: Executar o Script de Raspagem - Base Principal
+      env:
+        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
+      run: python atualizar_base.py
+
+    - name: Executar o Script de Detalhamento das Fichas
+      env:
+        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
+      run: python detalhar_fichas.py
