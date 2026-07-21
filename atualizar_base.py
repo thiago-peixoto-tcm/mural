@@ -5,18 +5,18 @@ from bs4 import BeautifulSoup
 import time
 import json
 import os
-import re
-import math
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# --- CONFIGURAÇÃO DA NUVEM (GOOGLE DRIVE) ---
+# --- CONFIGURAÇÕES ---
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
-CONEXOES_SIMULTANEAS = 4   
-MODO_TESTE = False         
-# ---------------------------------------------
+NOME_PLANILHA = "Base_Licitacoes_Principais"
+ANO_ALVO = 2026
+CONEXOES_SIMULTANEAS = 5
+MODO_TESTE = False  # Altere para True se quiser testar apenas 2 páginas
+# ---------------------
 
-URL_BASE_MURAL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem"
+URL_BASE = "https://spe.tcm.pa.gov.br/consultas/licitacoes"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
@@ -32,55 +32,57 @@ def obter_servicos_google():
     )
     return build('drive', 'v3', credentials=creds, cache_discovery=False), build('sheets', 'v4', credentials=creds, cache_discovery=False)
 
-def obter_id_google_sheet(nome_planilha):
+def obter_id_google_sheet():
     servico_drive, _ = obter_servicos_google()
-    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_planilha}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+    query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{NOME_PLANILHA}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
     resultado = servico_drive.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
     if arquivos:
         return arquivos[0]['id']
     else:
-        raise Exception(f"❌ Erro Crítico: A planilha '{nome_planilha}' não foi encontrada na sua pasta do Drive.")
+        raise Exception(f"❌ Erro Crítico: A planilha '{NOME_PLANILHA}' não foi encontrada.")
 
-def ler_dados_google_sheet(spreadsheet_id):
+def garantir_ou_obter_primeira_aba(spreadsheet_id, nome_aba_desejado):
+    _, servico_sheets = obter_servicos_google()
+    sheet_metadata = servico_sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = sheet_metadata.get('sheets', [])
+    primeira_aba = sheets[0]['properties']
+    
+    if primeira_aba['title'] != nome_aba_desejado:
+        body = {'requests': [{'updateSheetProperties': {'properties': {'sheetId': primeira_aba['sheetId'], 'title': nome_aba_desejado}, 'fields': 'title'}}]}
+        servico_sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
+    return primeira_aba['sheetId']
+
+def ler_aba_google_sheet(spreadsheet_id, nome_aba):
     _, servico_sheets = obter_servicos_google()
     try:
-        resultado = servico_sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
+        resultado = servico_sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{nome_aba}'!A1:ZZ").execute()
         valores = resultado.get('values', [])
         if not valores:
             return pd.DataFrame()
         return pd.DataFrame(valores[1:], columns=valores[0])
-    except Exception as e:
-        print(f"⚠️ Aviso ao ler do Google Sheets: {e}")
+    except Exception:
         return pd.DataFrame()
 
-def atualizar_dados_google_sheet(spreadsheet_id, df):
-    """Garante expansão das linhas no Google Sheets e grava dados fatiados sem estourar limites."""
-    df_strings = df.fillna("").astype(str)
+def atualizar_aba_google_sheet(spreadsheet_id, df_dados, nome_aba, sheet_id):
+    df_strings = df_dados.fillna("").astype(str)
     linhas_totais = len(df_strings)
-    
+    if linhas_totais == 0:
+        return
+
     _, servico_sheets = obter_servicos_google()
     
-    # 1. Pega o ID interno da primeira aba (sheetId)
-    sheet_metadata = servico_sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    aba_id = sheet_metadata['sheets'][0]['properties']['sheetId']
-    
-    # 2. Limpa o conteúdo antigo
-    print("🧹 Limpando conteúdo antigo da planilha...")
-    servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
-    
-    # 3. EXPANSÃO DO GRID: Redimensiona a aba para ter linhas suficientes (+ 100 de folga)
-    linhas_necessarias = linhas_totais + 500
-    print(f"📐 Redimensionando a aba no Google Sheets para comportar {linhas_necessarias} linhas...")
+    linhas_necessarias = max(linhas_totais + 500, 1000)
+    print(f"📐 Redimensionando aba '{nome_aba}' para {linhas_necessarias} linhas...")
     req_redimensionar = {
         "requests": [
             {
                 "updateSheetProperties": {
                     "properties": {
-                        "sheetId": aba_id,
+                        "sheetId": sheet_id,
                         "gridProperties": {
                             "rowCount": linhas_necessarias,
-                            "columnCount": 26
+                            "columnCount": 20
                         }
                     },
                     "fields": "gridProperties.rowCount,gridProperties.columnCount"
@@ -90,26 +92,15 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
     }
     servico_sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req_redimensionar).execute()
 
-    # 4. Escreve os Cabeçalhos na primeira linha
-    colunas = [df_strings.columns.tolist()]
-    servico_sheets.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range="A1",
-        valueInputOption="RAW",
-        body={'values': colunas}
-    ).execute()
-    
-    # 5. Envia o conteúdo em blocos de 5.000 linhas
+    valores_matriz = [df_strings.columns.tolist()] + df_strings.values.tolist()
     tamanho_bloco = 5000
-    print(f"📦 Enviando {linhas_totais} linhas para o Google Sheets em fatias de {tamanho_bloco}...")
+    print(f"📦 Enviando {linhas_totais} linhas em fatias...")
     
-    valores_matriz = df_strings.values.tolist()
-    
-    for i in range(0, linhas_totais, tamanho_bloco):
+    for i in range(0, len(valores_matriz), tamanho_bloco):
         bloco = valores_matriz[i : i + tamanho_bloco]
-        linha_inicio = i + 2  # +2 por conta do cabeçalho
+        linha_inicio = i + 1
         linha_fim = linha_inicio + len(bloco) - 1
-        intervalo = f"A{linha_inicio}:Z{linha_fim}"
+        intervalo = f"'{nome_aba}'!A{linha_inicio}:ZZ{linha_fim}"
         
         tentativas = 3
         for t in range(1, tentativas + 1):
@@ -121,98 +112,109 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
                     valueInputOption="RAW",
                     body={'values': bloco}
                 ).execute()
-                print(f"   --> Bloco de linhas {linha_inicio} até {linha_fim} enviado!")
+                print(f"   --> Bloco {linha_inicio} a {linha_fim} gravado com sucesso!")
                 break
             except Exception as e:
-                print(f"⚠️ Erro ao enviar bloco {linha_inicio}-{linha_fim} (tentativa {t}/{tentativas}): {e}")
                 if t == tentativas: raise e
                 time.sleep(3)
-                
-    print("💾 ✅ Tabela 'Base_Licitacoes_Principais' atualizada no Google Sheets com sucesso total!")
-    
-def descobrir_total_itens_e_paginas():
-    url = f"{URL_BASE_MURAL}?page=1&per-page=30"
-    res = requests.get(url, headers=HEADERS, timeout=20)
-    if res.status_code != 200:
-        raise Exception("❌ Não foi possível acessar o Mural do TCM-PA.")
-    
-    soup = BeautifulSoup(res.text, 'html.parser')
-    texto_pagina = soup.get_text()
-    match = re.search(r"A exibir\s+\d+-\d+\s+de\s+([\d\.]+)\s+itens", texto_pagina, re.IGNORECASE)
-    if match:
-        total_texto = match.group(1).replace(".", "")
-        total_itens = int(total_texto)
-        total_pags = math.ceil(total_itens / 30)
-        print(f"📊 Total de licitações identificadas: {total_itens} em {total_pags} páginas.")
-        return total_pags
-    return 5000 
 
-def raspar_pagina_listagem(num_pagina):
-    url = f"{URL_BASE_MURAL}?page={num_pagina}&per-page=30"
-    linhas_coletadas = []
+def raspar_pagina(num_pagina):
+    url = f"{URL_BASE}?page={num_pagina}"
+    licitacoes_pag = []
+    
     try:
-        res = requests.get(url, headers=HEADERS, timeout=20)
+        res = requests.get(url, headers=HEADERS, timeout=15)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             tabela = soup.find('table')
             if tabela:
-                corpo = tabela.find('tbody')
-                if corpo:
-                    for tr in corpo.find_all('tr'):
-                        tds = tr.find_all('td')
-                        if len(tds) >= 10:
-                            link_tag = tds[1].find('a')
-                            if link_tag and link_tag.get('href'):
-                                link_ficha = link_tag['href']
-                                if not link_ficha.startswith('http'):
-                                    link_ficha = "https://www.tcmpa.tc.br" + link_ficha
-                                
-                                linhas_coletadas.append({
-                                    "Legislação": tds[0].get_text(strip=True), "Número": tds[1].get_text(strip=True),
-                                    "Link_Ficha": link_ficha, "Modalidade": tds[2].get_text(strip=True),
-                                    "Tipo": tds[3].get_text(strip=True), "Objeto": tds[4].get_text(strip=True),
-                                    "Abertura": tds[5].get_text(strip=True), "Publicação": tds[6].get_text(strip=True),
-                                    "Município": tds[7].get_text(strip=True), "Órgão": tds[8].get_text(strip=True),
-                                    "Situação": tds[9].get_text(strip=True)
-                                })
+                linhas = tabela.find('tbody').find_all('tr') if tabela.find('tbody') else tabela.find_all('tr')
+                for linha in linhas:
+                    colunas = linha.find_all('td')
+                    # Tabela principal tem 11 colunas
+                    if len(colunas) >= 11:
+                        # Extração do Link do Número da Licitação
+                        link_tag = colunas[1].find('a')
+                        href = link_tag['href'] if link_tag and 'href' in link_tag.attrs else ""
+                        link_completo = f"https://spe.tcm.pa.gov.br{href}" if href.startswith("/") else href
+
+                        licitacao = {
+                            "Legislação": colunas[0].get_text(strip=True),
+                            "Número": colunas[1].get_text(strip=True),
+                            "Modalidade": colunas[2].get_text(strip=True),
+                            "Tipo": colunas[3].get_text(strip=True),
+                            "Objeto": colunas[4].get_text(strip=True),
+                            "Abertura": colunas[5].get_text(strip=True),
+                            "Publicação": colunas[6].get_text(strip=True),
+                            "Município": colunas[7].get_text(strip=True),
+                            "Órgão": colunas[8].get_text(strip=True),
+                            "Situação": colunas[9].get_text(strip=True),
+                            "Referência": colunas[10].get_text(strip=True),  # <-- Nova coluna
+                            "Adjudicado": colunas[11].get_text(strip=True) if len(colunas) > 11 else "", # <-- Nova coluna
+                            "Link_Ficha": link_completo
+                        }
+                        licitacoes_pag.append(licitacao)
     except Exception: pass
-    return linhas_coletadas
+    return licitacoes_pag
 
 def principal():
-    print("🔄 --- ETAPA 1: EXTRAÇÃO DA BASE PRINCIPAL ---")
-    id_sheet_principal = obter_id_google_sheet("Base_Licitacoes_Principais")
+    print("🔄 --- INICIANDO ATUALIZAÇÃO DA BASE PRINCIPAL ---")
     
-    total_paginas = descobrir_total_itens_e_paginas()
-    if MODO_TESTE:
-        total_paginas = 2
-        print("💡 Modo de teste ativo: varrendo apenas 2 páginas.")
+    spreadsheet_id = obter_id_google_sheet()
+    nome_aba_base = f"licitacoes_{ANO_ALVO}"
+    aba_base_id = garantir_ou_obter_primeira_aba(spreadsheet_id, nome_aba_base)
+    
+    df_existente = ler_aba_google_sheet(spreadsheet_id, nome_aba_base)
+
+    print("🔎 Descobrindo total de páginas no Mural...")
+    res = requests.get(URL_BASE, headers=HEADERS, timeout=15)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    
+    total_paginas = 1
+    paginacao = soup.find('ul', class_='pagination')
+    if paginacao:
+        links = paginacao.find_all('a')
+        nums = [int(l.get_text()) for l in links if l.get_text().isdigit()]
+        if nums: total_paginas = max(nums)
         
-    df_antigo_p = ler_dados_google_sheet(id_sheet_principal)
-    
-    print(f"🔎 Coletando as {total_paginas} páginas do mural...")
-    novas_linhas_mural = []
+    print(f"📄 Total de páginas encontradas: {total_paginas}")
+
+    if MODO_TESTE:
+        total_paginas = min(2, total_paginas)
+        print("💡 Modo de teste ativo: raspando 2 páginas.")
+
+    todas_licitacoes = []
+    print(f"🚀 Raspando páginas com {CONEXOES_SIMULTANEAS} conexões...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
-        resultados = executor.map(raspar_pagina_listagem, range(1, total_paginas + 1))
-        for i, res_pag in enumerate(resultados, 1):
-            novas_linhas_mural.extend(res_pag)
-            if i % 500 == 0 or i == total_paginas:
-                print(f"   Progresso das páginas: {i}/{total_paginas}...")
+        futuros = {executor.submit(raspar_pagina, p): p for p in range(1, total_paginas + 1)}
+        for futuro in concurrent.futures.as_completed(futuros):
+            res = futuro.result()
+            todas_licitacoes.extend(res)
 
-    if not novas_linhas_mural:
-        print("❌ Nenhuma linha capturada. Verifique a conexão com o TCM-PA.")
-        return
+    df_novos = pd.DataFrame(todas_licitacoes)
 
-    df_mural_atualizado = pd.DataFrame(novas_linhas_mural).drop_duplicates(subset=['Link_Ficha'])
-    
-    if not df_antigo_p.empty:
-        df_principal_acumulado = pd.concat([df_antigo_p, df_mural_atualizado], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='first')
+    if not df_novos.empty:
+        # Filtra pelo ano de 2026 no Número ou nas datas de Publicação/Abertura
+        mask_2026 = (
+            df_novos['Número'].str.contains(str(ANO_ALVO), na=False) |
+            df_novos['Publicação'].str.endswith(str(ANO_ALVO), na=False) |
+            df_novos['Abertura'].str.endswith(str(ANO_ALVO), na=False)
+        )
+        df_novos = df_novos[mask_2026]
+
+    print(f"📊 Licitações de {ANO_ALVO} encontradas nesta varredura: {len(df_novos)}")
+
+    if not df_existente.empty and not df_novos.empty:
+        df_final = pd.concat([df_existente, df_novos], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
+    elif not df_novos.empty:
+        df_final = df_novos
     else:
-        df_principal_acumulado = df_mural_atualizado
+        df_final = df_existente
 
-    print("💾 Gravando dados finais no Google Drive...")
-    atualizar_dados_google_sheet(id_sheet_principal, df_principal_acumulado)
-    print("🎉 PARABÉNS! ETAPA 1 FINALIZADA COM SUCESSO COMPLETO!")
+    print(f"💾 Gravando resultados na aba '{nome_aba_base}'...")
+    atualizar_aba_google_sheet(spreadsheet_id, df_final, nome_aba_base, aba_base_id)
+    print("🎉 ATUALIZAÇÃO DA BASE PRINCIPAL CONCLUÍDA COM SUCESSO!")
 
 if __name__ == "__main__":
     principal()
