@@ -12,8 +12,8 @@ from googleapiclient.discovery import build
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 NOME_PLANILHA = "Base_Licitacoes_Principais"
 ANO_ALVO = 2026
-CONEXOES_SIMULTANEAS = 5
-MODO_TESTE = False  # Altere para True se quiser testar apenas 2 páginas
+CONEXOES_SIMULTANEAS = 15  # Aumentado para acelerar o processo
+MODO_TESTE = False
 # ---------------------
 
 URL_BASE = "https://spe.tcm.pa.gov.br/consultas/licitacoes"
@@ -123,7 +123,7 @@ def raspar_pagina(num_pagina):
     licitacoes_pag = []
     
     try:
-        res = requests.get(url, headers=HEADERS, timeout=15)
+        res = requests.get(url, headers=HEADERS, timeout=12)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             tabela = soup.find('table')
@@ -131,9 +131,7 @@ def raspar_pagina(num_pagina):
                 linhas = tabela.find('tbody').find_all('tr') if tabela.find('tbody') else tabela.find_all('tr')
                 for linha in linhas:
                     colunas = linha.find_all('td')
-                    # Tabela principal tem 11 colunas
-                    if len(colunas) >= 11:
-                        # Extração do Link do Número da Licitação
+                    if len(colunas) >= 10:
                         link_tag = colunas[1].find('a')
                         href = link_tag['href'] if link_tag and 'href' in link_tag.attrs else ""
                         link_completo = f"https://spe.tcm.pa.gov.br{href}" if href.startswith("/") else href
@@ -149,8 +147,8 @@ def raspar_pagina(num_pagina):
                             "Município": colunas[7].get_text(strip=True),
                             "Órgão": colunas[8].get_text(strip=True),
                             "Situação": colunas[9].get_text(strip=True),
-                            "Referência": colunas[10].get_text(strip=True),  # <-- Nova coluna
-                            "Adjudicado": colunas[11].get_text(strip=True) if len(colunas) > 11 else "", # <-- Nova coluna
+                            "Referência": colunas[10].get_text(strip=True) if len(colunas) > 10 else "",
+                            "Adjudicado": colunas[11].get_text(strip=True) if len(colunas) > 11 else "",
                             "Link_Ficha": link_completo
                         }
                         licitacoes_pag.append(licitacao)
@@ -158,7 +156,7 @@ def raspar_pagina(num_pagina):
     return licitacoes_pag
 
 def principal():
-    print("🔄 --- INICIANDO ATUALIZAÇÃO DA BASE PRINCIPAL ---")
+    print("🔄 --- INICIANDO ATUALIZAÇÃO DA BASE PRINCIPAL (MODO TURBO) ---")
     
     spreadsheet_id = obter_id_google_sheet()
     nome_aba_base = f"licitacoes_{ANO_ALVO}"
@@ -177,17 +175,18 @@ def principal():
         nums = [int(l.get_text()) for l in links if l.get_text().isdigit()]
         if nums: total_paginas = max(nums)
         
-    print(f"📄 Total de páginas encontradas: {total_paginas}")
+    print(f"📄 Total de páginas encontradas no site: {total_paginas}")
 
+    # Limita a varredura para no máximo 300 páginas (suficiente para cobrir 2026 inteiro rapidamente)
+    limite_varredura = min(total_paginas, 300)
     if MODO_TESTE:
-        total_paginas = min(2, total_paginas)
-        print("💡 Modo de teste ativo: raspando 2 páginas.")
+        limite_varredura = 2
 
     todas_licitacoes = []
-    print(f"🚀 Raspando páginas com {CONEXOES_SIMULTANEAS} conexões...")
+    print(f"🚀 Raspando {limite_varredura} páginas com {CONEXOES_SIMULTANEAS} conexões em paralelo...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
-        futuros = {executor.submit(raspar_pagina, p): p for p in range(1, total_paginas + 1)}
+        futuros = {executor.submit(raspar_pagina, p): p for p in range(1, limite_varredura + 1)}
         for futuro in concurrent.futures.as_completed(futuros):
             res = futuro.result()
             todas_licitacoes.extend(res)
@@ -195,7 +194,6 @@ def principal():
     df_novos = pd.DataFrame(todas_licitacoes)
 
     if not df_novos.empty:
-        # Filtra pelo ano de 2026 no Número ou nas datas de Publicação/Abertura
         mask_2026 = (
             df_novos['Número'].str.contains(str(ANO_ALVO), na=False) |
             df_novos['Publicação'].str.endswith(str(ANO_ALVO), na=False) |
@@ -203,7 +201,7 @@ def principal():
         )
         df_novos = df_novos[mask_2026]
 
-    print(f"📊 Licitações de {ANO_ALVO} encontradas nesta varredura: {len(df_novos)}")
+    print(f"📊 Licitações de {ANO_ALVO} encontradas: {len(df_novos)}")
 
     if not df_existente.empty and not df_novos.empty:
         df_final = pd.concat([df_existente, df_novos], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
