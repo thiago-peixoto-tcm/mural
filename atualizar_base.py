@@ -24,14 +24,19 @@ HEADERS = {
 }
 
 def obter_servicos_google():
+    """Cria instâncias novas e autenticadas para evitar estouro de timeout do socket SSL."""
     dados_chave_json = os.environ.get("GOOGLE_DRIVE_JSON")
     if not dados_chave_json:
         raise Exception("❌ Erro: A variável de ambiente GOOGLE_DRIVE_JSON não foi encontrada.")
     info_credenciais = json.loads(dados_chave_json)
-    creds = Credentials.from_service_account_info(info_credenciais, scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
-    return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
+    creds = Credentials.from_service_account_info(
+        info_credenciais, 
+        scopes=['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets']
+    )
+    return build('drive', 'v3', credentials=creds, cache_discovery=False), build('sheets', 'v4', credentials=creds, cache_discovery=False)
 
-def obter_id_google_sheet(servico_drive, nome_planilha):
+def obter_id_google_sheet(nome_planilha):
+    servico_drive, _ = obter_servicos_google()
     query = f"'{ID_PASTA_GOOGLE_DRIVE}' in parents and name='{nome_planilha}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
     resultado = servico_drive.files().list(q=query, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
     arquivos = resultado.get('files', [])
@@ -40,29 +45,48 @@ def obter_id_google_sheet(servico_drive, nome_planilha):
     else:
         raise Exception(f"❌ Erro Crítico: A planilha '{nome_planilha}' não foi encontrada na sua pasta do Drive.")
 
-def ler_dados_google_sheet(servico_sheets, spreadsheet_id):
+def ler_dados_google_sheet(spreadsheet_id):
+    _, servico_sheets = obter_servicos_google()
     try:
         resultado = servico_sheets.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
         valores = resultado.get('values', [])
         if not valores:
             return pd.DataFrame()
         return pd.DataFrame(valores[1:], columns=valores[0])
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ Aviso ao ler do Google Sheets: {e}")
         return pd.DataFrame()
 
-def atualizar_dados_google_sheet(servico_sheets, spreadsheet_id, df):
+def atualizar_dados_google_sheet(spreadsheet_id, df):
+    """Atualiza a planilha usando reconexão automática e retentativas contra falhas de rede SSL."""
     df_strings = df.fillna("").astype(str)
     valores = [df_strings.columns.tolist()] + df_strings.values.tolist()
-    
-    # Faz uma única chamada de limpeza e regravação completa
-    servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
     corpo = {'values': valores}
-    servico_sheets.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range="A1",
-        valueInputOption="RAW",
-        body=corpo
-    ).execute()
+
+    tentativas = 3
+    for tentativa in range(1, tentativas + 1):
+        try:
+            # Força a criação de um serviço HTTP completamente limpo
+            _, servico_sheets = obter_servicos_google()
+            
+            # 1. Limpa o conteúdo
+            servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
+            
+            # 2. Insere a nova matriz de dados
+            servico_sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range="A1",
+                valueInputOption="RAW",
+                body=corpo
+            ).execute()
+            
+            print("   ✅ Dados gravados com sucesso no Google Sheets!")
+            break
+        except Exception as e:
+            print(f"⚠️ Falha de envio SSL (Tentativa {tentativa}/{tentativas}): {e}")
+            if tentativa == tentativas:
+                raise e
+            time.sleep(5)  # Espera 5 segundos antes de re-tentar
 
 def descobrir_total_itens_e_paginas():
     url = f"{URL_BASE_MURAL}?page=1&per-page=30"
@@ -189,7 +213,7 @@ def raspar_ficha_detalhes(linha_dados):
                     txt_c = p.get_text(" ", strip=True)
                     if txt_c:
                         base_c = {"Link_Ficha": link, "Origem_Aba": "Contratos", "Propriedade_Coluna": "Ficha", "Valor_Resultado": txt_c}
-                        base_c.update(quebrar_bloco_contrato(txt_c))
+                        base_c.update(quebral_bloco_contrato(txt_c))
                         sub_linhas.append(base_c)
             
             linha_dados.update(detalhes)
@@ -197,21 +221,19 @@ def raspar_ficha_detalhes(linha_dados):
     return linha_dados, sub_linhas
 
 def principal():
-    print("🔄 Conectando ao Google Drive e Sheets...")
-    servico_drive, servico_sheets = obter_servicos_google()
-    
-    id_sheet_principal = obter_id_google_sheet(servico_drive, "Base_Licitacoes_Principais")
-    id_sheet_fato = obter_id_google_sheet(servico_drive, "Abas_Detalhes_Fato")
+    print("🔄 Localizando planilhas no Google Drive...")
+    id_sheet_principal = obter_id_google_sheet("Base_Licitacoes_Principais")
+    id_sheet_fato = obter_id_google_sheet("Abas_Detalhes_Fato")
     
     total_paginas = descobrir_total_itens_e_paginas()
     if MODO_TESTE:
         total_paginas = 2
         print("💡 Modo de teste ativo: varrendo as 2 primeiras páginas.")
         
-    df_antigo_p = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
+    df_antigo_p = ler_dados_google_sheet(id_sheet_principal)
     
     # ----------------------------------------------------
-    # FASE 1: EXTRAIR LISTAGEM DO PORTAL E SALVAR IMEDIATAMENTE
+    # FASE 1: EXTRAIR LISTAGEM DO PORTAL E SALVAR
     # ----------------------------------------------------
     print(f"🔎 FASE 1: Carregando todas as {total_paginas} páginas do mural para a Base Principal...")
     novas_linhas_mural = []
@@ -231,16 +253,16 @@ def principal():
         df_principal_acumulado = df_mural_atualizado
 
     print("💾 Gravando a listagem atualizada na planilha Base_Licitacoes_Principais...")
-    atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_acumulado)
+    atualizar_dados_google_sheet(id_sheet_principal, df_principal_acumulado)
     print("✅ FASE 1 CONCLUÍDA! Planilha principal atualizada com sucesso no Drive.")
 
     # ----------------------------------------------------
-    # FASE 2: DETALHAMENTO SEGURO (MEMÓRIA RAM + ENVIO ÚNICO)
+    # FASE 2: DETALHAMENTO COM RE-CONEXÃO AUTOMÁTICA
     # ----------------------------------------------------
     print("🚀 FASE 2: Iniciando o detalhamento e filtragem por Exercício...")
     
-    df_principal_atualizada_drive = ler_dados_google_sheet(servico_sheets, id_sheet_principal)
-    df_antigo_f = ler_dados_google_sheet(servico_sheets, id_sheet_fato)
+    df_principal_atualizada_drive = ler_dados_google_sheet(id_sheet_principal)
+    df_antigo_f = ler_dados_google_sheet(id_sheet_fato)
     
     links_com_exercicio_antigo = set()
     if 'Exercício' in df_principal_atualizada_drive.columns:
@@ -270,17 +292,19 @@ def principal():
                 if processados % 100 == 0 or processados == total_fichas:
                     print(f"   Progresso Fichas: {processados}/{total_fichas}...")
 
-        # Junta tudo em memória antes de disparar para a API do Google
+        # Monta os DataFrames finais
         df_novas_p_df = pd.DataFrame(novas_p)
         df_novas_f_df = pd.DataFrame(novas_f)
         
         if not df_novas_p_df.empty:
             df_principal_final = pd.concat([df_principal_atualizada_drive, df_novas_p_df], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='last')
-            atualizar_dados_google_sheet(servico_sheets, id_sheet_principal, df_principal_final)
+            print("💾 Gravando atualizações finais na Base_Licitacoes_Principais...")
+            atualizar_dados_google_sheet(id_sheet_principal, df_principal_final)
             
         if not df_novas_f_df.empty:
             df_fato_final = pd.concat([df_antigo_f, df_novas_f_df], ignore_index=True)
-            atualizar_dados_google_sheet(servico_sheets, id_sheet_fato, df_fato_final)
+            print("💾 Gravando atualizações finais na Abas_Detalhes_Fato...")
+            atualizar_dados_google_sheet(id_sheet_fato, df_fato_final)
             
         print("💾 [SALVAMENTO FINAL] Todas as fichas gravadas no Google Sheets!")
     else:
