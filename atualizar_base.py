@@ -55,31 +55,55 @@ def ler_dados_google_sheet(spreadsheet_id):
         return pd.DataFrame()
 
 def atualizar_dados_google_sheet(spreadsheet_id, df):
+    """Envia dados fatiados em lotes de 5.000 linhas para não estourar o limite da API do Google (Erro 500)."""
     df_strings = df.fillna("").astype(str)
-    valores = [df_strings.columns.tolist()] + df_strings.values.tolist()
-    corpo = {'values': valores}
-
-    tentativas = 3
-    for tentativa in range(1, tentativas + 1):
-        try:
-            _, servico_sheets = obter_servicos_google()
-            
-            # Limpa o conteúdo e grava a matriz atualizada
-            servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
-            servico_sheets.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range="A1",
-                valueInputOption="RAW",
-                body=corpo
-            ).execute()
-            
-            print("💾 ✅ Tabela 'Base_Licitacoes_Principais' atualizada com sucesso no Google Sheets!")
-            break
-        except Exception as e:
-            print(f"⚠️ Falha de envio (Tentativa {tentativa}/{tentativas}): {e}")
-            if tentativa == tentativas:
-                raise e
-            time.sleep(5)
+    
+    _, servico_sheets = obter_servicos_google()
+    
+    # 1. Limpa a planilha inteira antes de regravar
+    print("🧹 Limpando conteúdo antigo da planilha...")
+    servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
+    
+    # 2. Escreve os Cabeçalhos na primeira linha
+    colunas = [df_strings.columns.tolist()]
+    servico_sheets.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="A1",
+        valueInputOption="RAW",
+        body={'values': colunas}
+    ).execute()
+    
+    # 3. Envia o conteúdo em blocos de 5.000 linhas (Chunking)
+    linhas_totais = len(df_strings)
+    tamanho_bloco = 5000
+    print(f"📦 Enviando {linhas_totais} linhas para o Google Sheets em fatias de {tamanho_bloco}...")
+    
+    valores_matriz = df_strings.values.tolist()
+    
+    for i in range(0, linhas_totais, tamanho_bloco):
+        bloco = valores_matriz[i : i + tamanho_bloco]
+        linha_inicio = i + 2  # +2 por conta do cabeçalho na linha 1 e índice base 1 do Sheets
+        linha_fim = linha_inicio + len(bloco) - 1
+        intervalo = f"A{linha_inicio}:Z{linha_fim}"
+        
+        tentativas = 3
+        for t in range(1, tentativas + 1):
+            try:
+                _, servicos_novos = obter_servicos_google()
+                servicos_novos.spreadsheets().values().update(
+                    spreadsheetId=spreadsheet_id,
+                    range=intervalo,
+                    valueInputOption="RAW",
+                    body={'values': bloco}
+                ).execute()
+                print(f"   --> Bloco de linhas {linha_inicio} até {linha_fim} enviado!")
+                break
+            except Exception as e:
+                print(f"⚠️ Erro ao enviar bloco {linha_inicio}-{linha_fim} (tentativa {t}/{tentativas}): {e}")
+                if t == tentativas: raise e
+                time.sleep(3)
+                
+    print("💾 ✅ Tabela 'Base_Licitacoes_Principais' atualizada no Google Sheets com sucesso total!")
 
 def descobrir_total_itens_e_paginas():
     url = f"{URL_BASE_MURAL}?page=1&per-page=30"
@@ -156,7 +180,6 @@ def principal():
 
     df_mural_atualizado = pd.DataFrame(novas_linhas_mural).drop_duplicates(subset=['Link_Ficha'])
     
-    # Junta com os dados históricos existentes na planilha (para preservar colunas já preenchidas)
     if not df_antigo_p.empty:
         df_principal_acumulado = pd.concat([df_antigo_p, df_mural_atualizado], ignore_index=True).drop_duplicates(subset=['Link_Ficha'], keep='first')
     else:
@@ -164,7 +187,7 @@ def principal():
 
     print("💾 Gravando dados finais no Google Drive...")
     atualizar_dados_google_sheet(id_sheet_principal, df_principal_acumulado)
-    print("🎉 PARABÉNS! ETAPA 1 FINALIZADA COM SUCESSO!")
+    print("🎉 PARABÉNS! ETAPA 1 FINALIZADA COM SUCESSO COMPLETO!")
 
 if __name__ == "__main__":
     principal()
