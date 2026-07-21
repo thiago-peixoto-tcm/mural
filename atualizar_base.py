@@ -55,16 +55,42 @@ def ler_dados_google_sheet(spreadsheet_id):
         return pd.DataFrame()
 
 def atualizar_dados_google_sheet(spreadsheet_id, df):
-    """Envia dados fatiados em lotes de 5.000 linhas para não estourar o limite da API do Google (Erro 500)."""
+    """Garante expansão das linhas no Google Sheets e grava dados fatiados sem estourar limites."""
     df_strings = df.fillna("").astype(str)
+    linhas_totais = len(df_strings)
     
     _, servico_sheets = obter_servicos_google()
     
-    # 1. Limpa a planilha inteira antes de regravar
+    # 1. Pega o ID interno da primeira aba (sheetId)
+    sheet_metadata = servico_sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    aba_id = sheet_metadata['sheets'][0]['properties']['sheetId']
+    
+    # 2. Limpa o conteúdo antigo
     print("🧹 Limpando conteúdo antigo da planilha...")
     servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
     
-    # 2. Escreve os Cabeçalhos na primeira linha
+    # 3. EXPANSÃO DO GRID: Redimensiona a aba para ter linhas suficientes (+ 100 de folga)
+    linhas_necessarias = linhas_totais + 500
+    print(f"📐 Redimensionando a aba no Google Sheets para comportar {linhas_necessarias} linhas...")
+    req_redimensionar = {
+        "requests": [
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": aba_id,
+                        "gridProperties": {
+                            "rowCount": linhas_necessarias,
+                            "columnCount": 26
+                        }
+                    },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount"
+                }
+            }
+        ]
+    }
+    servico_sheets.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=req_redimensionar).execute()
+
+    # 4. Escreve os Cabeçalhos na primeira linha
     colunas = [df_strings.columns.tolist()]
     servico_sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
@@ -73,8 +99,7 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
         body={'values': colunas}
     ).execute()
     
-    # 3. Envia o conteúdo em blocos de 5.000 linhas (Chunking)
-    linhas_totais = len(df_strings)
+    # 5. Envia o conteúdo em blocos de 5.000 linhas
     tamanho_bloco = 5000
     print(f"📦 Enviando {linhas_totais} linhas para o Google Sheets em fatias de {tamanho_bloco}...")
     
@@ -82,7 +107,7 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
     
     for i in range(0, linhas_totais, tamanho_bloco):
         bloco = valores_matriz[i : i + tamanho_bloco]
-        linha_inicio = i + 2  # +2 por conta do cabeçalho na linha 1 e índice base 1 do Sheets
+        linha_inicio = i + 2  # +2 por conta do cabeçalho
         linha_fim = linha_inicio + len(bloco) - 1
         intervalo = f"A{linha_inicio}:Z{linha_fim}"
         
@@ -104,7 +129,7 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
                 time.sleep(3)
                 
     print("💾 ✅ Tabela 'Base_Licitacoes_Principais' atualizada no Google Sheets com sucesso total!")
-
+    
 def descobrir_total_itens_e_paginas():
     url = f"{URL_BASE_MURAL}?page=1&per-page=30"
     res = requests.get(url, headers=HEADERS, timeout=20)
