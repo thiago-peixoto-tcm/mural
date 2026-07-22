@@ -2,13 +2,13 @@ name: Robô Diário de Licitações
 
 on:
   schedule:
-    - cron: '0 9 * * *' # Roda automaticamente todos os dias às 06:00 (Brasília)
-  workflow_dispatch: # Permite rodar manualmente clicando no botão do GitHub
+    - cron: '0 9 * * *'
+  workflow_dispatch:
 
 jobs:
   executar-script:
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # Cancela automaticamente se ultrapassar 15 min
+    timeout-minutes: 15
 
     steps:
       - name: Baixar o código do repositório
@@ -26,7 +26,7 @@ jobs:
 
       - name: Executar o Script de Raspagem
         run: |
-          python raspagem.py
+          python atualizar_base.py
 
       - name: Salvar o CSV atualizado no repositório
         run: |
