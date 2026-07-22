@@ -53,12 +53,12 @@ def atualizar_dados_google_sheet(spreadsheet_id, df):
     sheet_metadata = servico_sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     aba_id = sheet_metadata['sheets'][0]['properties']['sheetId']
     
-    # 2. Limpa o conteúdo antigo
+    # 2. Limpa o conteúdo antigo da aba principal
     print("🧹 Limpando conteúdo antigo da planilha...")
     servico_sheets.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range="A1:Z").execute()
     
-    # 3. EXPANSÃO DO GRID: Redimensiona a aba para ter linhas suficientes (+ 500 de folga)
-    linhas_necessarias = linhas_totais + 500
+    # 3. EXPANSÃO DO GRID: Redimensiona para suportar as linhas
+    linhas_necessarias = max(linhas_totais + 500, 1000)
     print(f"📐 Redimensionando a aba no Google Sheets para comportar {linhas_necessarias} linhas...")
     req_redimensionar = {
         "requests": [
@@ -147,7 +147,7 @@ def raspar_pagina(num_pagina):
                             "Município": colunas[7].get_text(strip=True),
                             "Órgão": colunas[8].get_text(strip=True),
                             "Situação": colunas[9].get_text(strip=True),
-                            # Captura segura das duas novas colunas
+                            # Captura das duas colunas adicionais de valores
                             "Referência": colunas[10].get_text(strip=True) if len(colunas) > 10 else "",
                             "Adjudicado": colunas[11].get_text(strip=True) if len(colunas) > 11 else "",
                             "Link_Ficha": link_completo
