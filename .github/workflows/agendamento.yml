@@ -2,38 +2,36 @@ name: Robô Diário de Licitações
 
 on:
   schedule:
-    # Roda todos os dias às 04:00 UTC (01:00h da manhã no horário de Brasília)
-    - cron: '0 4 * * *'
-  workflow_dispatch: # Permite que você rode o robô manualmente quando quiser clicando em um botão
+    - cron: '0 9 * * *' # Roda automaticamente todos os dias às 06:00 (Brasília)
+  workflow_dispatch: # Permite rodar manualmente clicando no botão do GitHub
 
 jobs:
   executar-script:
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # Cancela automaticamente se ultrapassar 15 min
 
     steps:
-    - name: Baixar o código do repositório
-      uses: actions/checkout@v4
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v3
 
-    - name: Configurar o Python no servidor
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Configurar o Python no servidor
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Instalar as bibliotecas necessárias
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests pandas bs4 openpyxl google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client gspread
+      - name: Instalar as bibliotecas necessárias
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pandas openpyxl
 
+      - name: Executar o Script de Raspagem
+        run: |
+          python raspagem.py
 
-
-        
-    - name: Executar o Script de Raspagem
-      env:
-        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
-      run: python atualizar_base.py
-
-
-    - name: Executar o Script de Detalhamento das Fichas
-      env:
-        GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
-      run: python detalhar_fichas.py
+      - name: Salvar o CSV atualizado no repositório
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add licitacoes_tcm_pa.csv
+          git commit -m "Atualização automática das licitações" || exit 0
+          git push
