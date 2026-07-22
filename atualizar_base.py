@@ -1,46 +1,45 @@
+import time
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
+from bs4 import BeautifulSoup
 
-# URL base do portal de licitações
 BASE_URL = "https://www.tcmpa.tc.br"
-TARGET_URL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page=1&per-page=30"
+URL_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=50"
 
-# User-Agent para evitar bloqueios de requisição simples
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-def extrair_licitacoes(url):
-    print(f"Fazendo requisição para: {url}...")
+def extrair_pagina(pagina):
+    url = URL_PAGINA.format(pagina)
+    print(f"--> Extraindo dados da página {pagina}...")
     
     try:
+        # Timeout de 15 segundos evita que a execução fique presa
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
-        print(f"Erro ao acessar a página: {e}")
+        print(f"❌ Erro de conexão na página {pagina}: {e}")
         return None
 
     soup = BeautifulSoup(response.content, 'html.parser')
     
-    # Seleciona a tabela de licitações dentro da div com ID 'w0'
-    table = soup.find('div', id='w0').find('table') if soup.find('div', id='w0') else None
-    
-    if not table:
-        print("Tabela de licitações não encontrada.")
+    div_tabela = soup.find('div', id='w0')
+    if not div_tabela:
+        return None
+        
+    table = div_tabela.find('table')
+    if not table or not table.find('tbody'):
         return None
 
-    tbody = table.find('tbody')
-    rows = tbody.find_all('tr')
-    
-    dados = []
+    rows = table.find('tbody').find_all('tr')
+    dados_pagina = []
 
     for row in rows:
         cols = row.find_all('td')
         
-        # Garante que é uma linha de dados com o número de colunas esperado (12 colunas)
+        # Confere se a linha possui as 12 colunas da tabela
         if len(cols) >= 12:
-            # Captura a tag <a> do número da licitação para extrair o link detalhado
             link_tag = cols[1].find('a')
             numero_texto = link_tag.get_text(strip=True) if link_tag else cols[1].get_text(strip=True)
             link_ficha = BASE_URL + link_tag['href'] if link_tag and 'href' in link_tag.attrs else ""
@@ -57,23 +56,36 @@ def extrair_licitacoes(url):
                 'Município': cols[7].get_text(strip=True),
                 'Órgão': cols[8].get_text(strip=True),
                 'Situação': cols[9].get_text(strip=True),
-                'Valor Referência (R$)': cols[10].get_text(strip=True),
-                'Valor Adjudicado (R$)': cols[11].get_text(strip=True)
+                'Valor Referência (R$)': cols[10].get_text(strip=True), # Capturado!
+                'Valor Adjudicado (R$)': cols[11].get_text(strip=True)  # Capturado!
             }
-            dados.append(item)
+            dados_pagina.append(item)
 
-    # Converte em DataFrame
-    df = pd.DataFrame(dados)
-    return df
+    return dados_pagina
 
-# Execução do script
-if __name__ == "__main__":
-    df_licitacoes = extrair_licitacoes(TARGET_URL)
+def executar_raspagem(max_paginas=5):
+    """
+    Busca as 5 primeiras páginas (250 licitações mais recentes).
+    Aumente ou diminua 'max_paginas' se precisar de mais histórico.
+    """
+    todos_dados = []
     
-    if df_licitacoes is not None and not df_licitacoes.empty:
-        print(f"\nSucesso! {len(df_licitacoes)} itens extraídos.")
-        print(df_licitacoes[['Número', 'Município', 'Situação', 'Valor Referência (R$)']].head())
+    for pagina in range(1, max_paginas + 1):
+        dados = extrair_pagina(pagina)
+        if not dados:
+            print(f"Fim da listagem ou falha na página {pagina}.")
+            break
+        todos_dados.extend(dados)
+        time.sleep(1) # Pausa amigável de 1s para o servidor
+
+    if todos_dados:
+        df = pd.DataFrame(todos_dados)
         
-        # Salva o resultado em Excel e CSV
-        df_licitacoes.to_csv("licitacoes_tcm_pa.csv", index=False, encoding="utf-8-sig")
-        print("\nDados salvos em 'licitacoes_tcm_pa.csv'.")
+        # Salva a tabela limpa
+        df.to_csv("licitacoes_tcm_pa.csv", index=False, encoding="utf-8-sig")
+        print(f"\n✅ Sucesso! Total de {len(df)} licitações salvas em 'licitacoes_tcm_pa.csv'.")
+    else:
+        print("\n⚠️ Nenhuma licitação foi extraída.")
+
+if __name__ == "__main__":
+    executar_raspagem(max_paginas=5)
