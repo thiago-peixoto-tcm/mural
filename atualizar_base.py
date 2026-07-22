@@ -3,8 +3,8 @@ from bs4 import BeautifulSoup
 import pandas as pd
 
 # URL base do portal de licitações
-BASE_URL = "https://www.tcm.pa.gov.br"
-TARGET_URL = "https://www.tcm.pa.gov.br/mural-de-licitacoes/licitacoes/listagem?page=1&per-page=30"
+BASE_URL = "https://www.tcmpa.tc.br"
+TARGET_URL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page=1&per-page=30"
 
 # User-Agent para evitar bloqueios de requisição simples
 HEADERS = {
