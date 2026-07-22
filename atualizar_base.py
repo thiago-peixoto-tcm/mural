@@ -15,7 +15,6 @@ def extrair_pagina(pagina):
     print(f"--> Extraindo dados da página {pagina}...")
     
     try:
-        # Timeout de 15 segundos evita que a execução fique presa
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
     except requests.RequestException as e:
@@ -38,7 +37,6 @@ def extrair_pagina(pagina):
     for row in rows:
         cols = row.find_all('td')
         
-        # Confere se a linha possui as 12 colunas da tabela
         if len(cols) >= 12:
             link_tag = cols[1].find('a')
             numero_texto = link_tag.get_text(strip=True) if link_tag else cols[1].get_text(strip=True)
@@ -56,18 +54,14 @@ def extrair_pagina(pagina):
                 'Município': cols[7].get_text(strip=True),
                 'Órgão': cols[8].get_text(strip=True),
                 'Situação': cols[9].get_text(strip=True),
-                'Valor Referência (R$)': cols[10].get_text(strip=True), # Capturado!
-                'Valor Adjudicado (R$)': cols[11].get_text(strip=True)  # Capturado!
+                'Valor Referência (R$)': cols[10].get_text(strip=True),
+                'Valor Adjudicado (R$)': cols[11].get_text(strip=True)
             }
             dados_pagina.append(item)
 
     return dados_pagina
 
 def executar_raspagem(max_paginas=5):
-    """
-    Busca as 5 primeiras páginas (250 licitações mais recentes).
-    Aumente ou diminua 'max_paginas' se precisar de mais histórico.
-    """
     todos_dados = []
     
     for pagina in range(1, max_paginas + 1):
@@ -76,12 +70,10 @@ def executar_raspagem(max_paginas=5):
             print(f"Fim da listagem ou falha na página {pagina}.")
             break
         todos_dados.extend(dados)
-        time.sleep(1) # Pausa amigável de 1s para o servidor
+        time.sleep(1)
 
     if todos_dados:
         df = pd.DataFrame(todos_dados)
-        
-        # Salva a tabela limpa
         df.to_csv("licitacoes_tcm_pa.csv", index=False, encoding="utf-8-sig")
         print(f"\n✅ Sucesso! Total de {len(df)} licitações salvas em 'licitacoes_tcm_pa.csv'.")
     else:
