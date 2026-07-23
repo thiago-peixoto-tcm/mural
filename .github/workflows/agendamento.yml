@@ -2,7 +2,9 @@ name: Robô Diário de Licitações
 
 on:
   schedule:
-    - cron: '0 9 * * *'
+    # Dispara às 03:17 da manhã (Horário de Brasília) / 06:17 UTC
+    # O minuto '17' evita as filas de congestionamento do GitHub Actions
+    - cron: '17 6 * * *'
   workflow_dispatch:
 
 jobs:
