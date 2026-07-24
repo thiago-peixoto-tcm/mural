@@ -1,8 +1,8 @@
 import re
 import time
-import requests
 import gspread
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 from google.oauth2.service_account import Credentials
 
 # ==============================================================================
@@ -27,22 +27,6 @@ CABECALHO = [
     "Será Firmado Contrato", "Contratos_Data", "Aditivos_Data"
 ]
 
-def criar_sessao_navegador():
-    """Cria uma sessão que simula com precisão um navegador Chrome real."""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1"
-    })
-    return session
-
 def conectar_google_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     credentials = Credentials.from_service_account_file("credentials.json", scopes=scopes)
@@ -55,90 +39,94 @@ def obter_links_origem(client):
     links_validos = [url for url in links if url.startswith("http")]
 
     if MODO_TESTE:
-        print(f"🧪 [MODO TESTE] Processando apenas os primeiros {LIMITE_TESTE} links.")
+        print(f"🧪 [MODO TESTE ATIVO] Executando apenas para as primeiras {LIMITE_TESTE} linhas.")
         return links_validos[:LIMITE_TESTE]
     return links_validos
 
-def extrair_ficha(session, url_ficha, retentativas=3):
-    """Acessa a URL da ficha e raspa os 26 campos."""
-    for tentativa in range(1, retentativas + 1):
+def formatar_url_licitacao(url):
+    """Garante que a URL termine exatamente com #licitacao."""
+    url_limpa = url.split("#")[0].strip()
+    return f"{url_limpa}#licitacao"
+
+def extrair_dados_pagina(page, url_ficha):
+    url_com_hash = formatar_url_licitacao(url_ficha)
+    dados = {k: "não informado" for k in CABECALHO}
+    dados["Link Ficha"] = url_ficha
+
+    try:
+        # Abre a página no navegador real e aguarda o carregamento dos seletores DOM
+        page.goto(url_com_hash, wait_until="domcontentloaded", timeout=40000)
+        
+        # Aguarda 2 segundos adicionais para renderização do JavaScript do TCM
+        page.wait_for_timeout(2000)
+
+        html_content = page.content()
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # --- 1 a 6: Abas Superiores ---
         try:
-            time.sleep(1.2) # Pausa fundamental para evitar WAF/Rate Limit
-            resp = session.get(url_ficha, timeout=25, allow_redirects=True)
-            
-            if resp.status_code == 200 and "MURAL DE LICITAÇÕES" in resp.text.upper():
-                soup = BeautifulSoup(resp.content, "html.parser")
-                dados = {k: "não informado" for k in CABECALHO}
-                dados["Link Ficha"] = url_ficha
+            resumo_badges = soup.find_all("span", class_="resumo-qtd")
+            if len(resumo_badges) >= 6:
+                dados["Documentos"] = resumo_badges[0].get_text(strip=True)
+                dados["Publicidades"] = resumo_badges[1].get_text(strip=True)
+                dados["Participantes"] = resumo_badges[2].get_text(strip=True)
+                dados["Lotes & Itens"] = resumo_badges[3].get_text(strip=True)
+                dados["Contratos"] = resumo_badges[4].get_text(strip=True)
+                dados["Aditivos"] = resumo_badges[5].get_text(strip=True)
+        except Exception:
+            pass
 
-                # 1 a 6: Abas Superiores (badges)
-                try:
-                    resumo_badges = soup.find_all("span", class_="resumo-qtd")
-                    if len(resumo_badges) >= 6:
-                        dados["Documentos"] = resumo_badges[0].get_text(strip=True)
-                        dados["Publicidades"] = resumo_badges[1].get_text(strip=True)
-                        dados["Participantes"] = resumo_badges[2].get_text(strip=True)
-                        dados["Lotes & Itens"] = resumo_badges[3].get_text(strip=True)
-                        dados["Contratos"] = resumo_badges[4].get_text(strip=True)
-                        dados["Aditivos"] = resumo_badges[5].get_text(strip=True)
-                except Exception:
-                    pass
+        # --- 7: Número da Licitação ---
+        try:
+            h5_lic = soup.find("h5", class_="text-blue")
+            if h5_lic:
+                dados["LICITAÇÃO"] = h5_lic.get_text(strip=True)
+        except Exception:
+            pass
 
-                # 7: Número da Licitação
-                try:
-                    h5_lic = soup.find("h5", class_="text-blue")
-                    if h5_lic:
-                        dados["LICITAÇÃO"] = h5_lic.get_text(strip=True)
-                except Exception:
-                    pass
+        # --- 8 a 18: Bloco Principal (bill-to) ---
+        try:
+            bill_to = soup.find("div", class_="bill-to")
+            if bill_to:
+                for p in bill_to.find_all("p"):
+                    texto = p.get_text(" ", strip=True)
+                    if ":" in texto:
+                        chave_bruta, valor = texto.split(":", 1)
+                        chave_limpa = re.sub(r'^[>\s\W]+', '', chave_bruta).strip().lower()
+                        valor_limpo = valor.strip()
+                        
+                        for campo_ref in CABECALHO[8:19]:
+                            if campo_ref.lower() in chave_limpa:
+                                dados[campo_ref] = valor_limpo
+                                break
+        except Exception:
+            pass
 
-                # 8 a 18: Bloco Principal (bill-to)
-                try:
-                    bill_to = soup.find("div", class_="bill-to")
-                    if bill_to:
-                        for p in bill_to.find_all("p"):
-                            texto = p.get_text(" ", strip=True)
-                            if ":" in texto:
-                                chave_bruta, valor = texto.split(":", 1)
-                                chave_limpa = re.sub(r'^[>\s\W]+', '', chave_bruta).strip().lower()
-                                valor_limpo = valor.strip()
-                                
-                                for campo_ref in CABECALHO[8:19]:
-                                    if campo_ref.lower() in chave_limpa:
-                                        dados[campo_ref] = valor_limpo
-                                        break
-                except Exception:
-                    pass
+        # --- 19 a 26: Bloco Lateral (bill-data) ---
+        try:
+            bill_data = soup.find("div", class_="bill-data")
+            if bill_data:
+                mapeamento = [
+                    ("Exercício", "Exercício"), ("Abertura", "Abertura"),
+                    ("Publicação", "Publicação"), ("Homologação", "Homologação"),
+                    ("Caráter Sigiloso", "Caráter Sigiloso"), ("Será Firmado Contrato", "Será Firmado Contrato"),
+                    ("Contratos", "Contratos_Data"), ("Aditivos", "Aditivos_Data")
+                ]
+                for p in bill_data.find_all("p"):
+                    txt = p.get_text(" ", strip=True)
+                    for rotulo, chave_dest in mapeamento:
+                        if rotulo.lower() in txt.lower() and ":" in txt:
+                            _, val = txt.split(":", 1)
+                            dados[chave_dest] = val.strip()
+                            break
+        except Exception:
+            pass
 
-                # 19 a 26: Bloco Lateral (bill-data)
-                try:
-                    bill_data = soup.find("div", class_="bill-data")
-                    if bill_data:
-                        mapeamento = [
-                            ("Exercício", "Exercício"), ("Abertura", "Abertura"),
-                            ("Publicação", "Publicação"), ("Homologação", "Homologação"),
-                            ("Caráter Sigiloso", "Caráter Sigiloso"), ("Será Firmado Contrato", "Será Firmado Contrato"),
-                            ("Contratos", "Contratos_Data"), ("Aditivos", "Aditivos_Data")
-                        ]
-                        for p in bill_data.find_all("p"):
-                            txt = p.get_text(" ", strip=True)
-                            for rotulo, chave_dest in mapeamento:
-                                if rotulo.lower() in txt.lower() and ":" in txt:
-                                    _, val = txt.split(":", 1)
-                                    dados[chave_dest] = val.strip()
-                                    break
-                except Exception:
-                    pass
+        return [dados[col] for col in CABECALHO]
 
-                return [dados[col] for col in CABECALHO]
-            else:
-                print(f"⚠️ HTTP {resp.status_code} na tentativa {tentativa} para: {url_ficha}")
-
-        except Exception as e:
-            print(f"⚠️ Erro de conexão na tentativa {tentativa}: {e}")
-            time.sleep(2)
-
-    return [url_ficha] + ["ERRO / BLOQUEIO"] * 26
+    except Exception as e:
+        print(f"⚠️ Erro ao carregar {url_com_hash}: {e}")
+        return [url_ficha] + ["ERRO / BLOQUEIO"] * 26
 
 def executar():
     print("🔌 Conectando ao Google Sheets...")
@@ -152,31 +140,31 @@ def executar():
         print("⚠️ Nenhum link encontrado.")
         return
 
-    print("🌐 Criando sessão de navegação...")
-    session = criar_sessao_navegador()
-
-    # Primeiro faz um 'warm-up' na home do site para gerar cookies válidos
-    try:
-        session.get("https://www.tcmpa.tc.br/mural-de-licitacoes/", timeout=15)
-        time.sleep(1)
-    except Exception:
-        pass
-
     resultados = []
-    print(f"🚀 Baixando {total} fichas sequencialmente...")
     
-    for idx, url in enumerate(links, 1):
-        print(f"⚡ [{idx}/{total}] Extraindo: {url}")
-        linha = extrair_ficha(session, url)
-        resultados.append(linha)
+    print("🌐 Iniciando o Navegador Chromium (Playwright)...")
+    with sync_playwright() as p:
+        # Inicia um navegador real
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox'])
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        page = context.new_page()
 
-    print("📤 Enviando dados para 'Abas_Detalhes_Fato'...")
+        print(f"🚀 Processando {total} fichas com renderização de JavaScript...")
+        for idx, url in enumerate(links, 1):
+            print(f"⚡ [{idx}/{total}] Carregando página: {url}")
+            linha = extrair_dados_pagina(page, url)
+            resultados.append(linha)
+            time.sleep(1) # Pausa amigável entre páginas
+
+        browser.close()
+
+    print("📤 Enviando resultados para a planilha 'Abas_Detalhes_Fato'...")
     sheet_destino = client.open_by_key(DESTINO_SPREADSHEET_ID).sheet1
     sheet_destino.clear()
     sheet_destino.update('A1', [CABECALHO])
     sheet_destino.append_rows(resultados)
 
-    print("🎉 Teste concluído! Verifique a planilha 'Abas_Detalhes_Fato'.")
+    print("🎉 Teste concluído com sucesso! Verifique a planilha 'Abas_Detalhes_Fato'.")
 
 if __name__ == "__main__":
     executar()
