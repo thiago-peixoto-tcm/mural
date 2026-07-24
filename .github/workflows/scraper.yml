@@ -4,7 +4,7 @@ on:
   schedule:
     # 05:31 BRT (Horário de Brasília) equivale a 08:31 UTC.
     - cron: '31 8 * * *'
-  workflow_dispatch: # Permite rodar manualmente se desejar
+  workflow_dispatch: # Permite rodar manualmente clicando em um botão
 
 jobs:
   run-scraper:
@@ -26,5 +26,6 @@ jobs:
 
     - name: Executar o Robô
       env:
-        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        # Aqui conectamos o nome do seu secret com o código Python
+        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_DRIVE_JSON }}
       run: python bot.py
