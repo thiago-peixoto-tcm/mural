@@ -1,0 +1,36 @@
+name: Robô Diário de Detalhes das Licitações
+
+on:
+  schedule:
+    # Executa diariamente às 05:31 da manhã (Horário de Brasília) -> 08:31 UTC
+    - cron: '31 8 * * *'
+  workflow_dispatch: # Permite acionamento manual
+
+jobs:
+  executar-detalhes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v3
+
+      - name: Configurar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 gspread google-auth
+
+      - name: Criar arquivo de credenciais do Google
+        env:
+          GOOGLE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
+        run: |
+          echo "$GOOGLE_JSON" > credentials.json
+
+      - name: Executar Robô de Fichas Detalhadas
+        run: |
+          python extrair_detalhes.py
