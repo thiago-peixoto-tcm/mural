@@ -144,7 +144,10 @@ def main():
     print("--- MODO DE TESTE ATIVADO: PROCESSANDO APENAS AS 5 PRIMEIRAS LINHAS ---")
 
     # A) Leitura dos Links
-    sheet_origem = client.open_by_key("1UTIgbvelQP4CMNblsB9WDfNvKMdi17SI8I7EQer_GEs").sheet1
+# Atualize para:
+doc_origem = client.open_by_key("1UTIgbvelQP4CMNblsB9WDfNvKMdi17SI8I7EQer_GEs")
+sheet_origem = doc_origem.get_worksheet(0) # Pega a primeira aba
+
     
     col_c_values = sheet_origem.col_values(3)
     
