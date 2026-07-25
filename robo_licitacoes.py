@@ -23,10 +23,15 @@ CABECALHOS_ESPERADOS = [
     "Será Firmado Contrato", "Contratos (Resumo)", "Aditivos (Resumo)"
 ]
 
+import socket
+
 def obter_servico_sheets():
     """Autentica via Service Account usando a Secret do GitHub Actions."""
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     json_str = os.environ.get("GOOGLE_DRIVE_JSON")
+    
+    # Aumenta o tempo limite global de soquete para evitar timeout
+    socket.setdefaulttimeout(60)
     
     if json_str:
         print("[INFO] Autenticando via Secret GOOGLE_DRIVE_JSON...")
