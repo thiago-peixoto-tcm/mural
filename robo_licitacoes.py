@@ -3,14 +3,15 @@ import json
 import time
 import requests
 from bs4 import BeautifulSoup
-import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
-# --- URLS COMPLETAS DAS PLANILHAS (Evita a busca v3 no Drive que gera o 404) ---
-URL_ORIGEM = "https://docs.google.com/spreadsheets/d/1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs/edit"
-URL_DESTINO = "https://docs.google.com/spreadsheets/d/1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U/edit"
+# --- CONFIGURAÇÃO DOS IDS E ABAS ---
+PLANILHA_ENTRADA_ID = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
+ABA_ENTRADA = "licitacoes_2026"
 
-# 27 Colunas Exatas
+PLANILHA_SAIDA_ID = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
+
 CABECALHOS_ESPERADOS = [
     "Link Ficha", "Documentos", "Publicidades", "Participantes", "Lotes & Itens",
     "Contratos", "Aditivos", "LICITAÇÃO", "Nº do Processo Administrativo",
@@ -22,24 +23,20 @@ CABECALHOS_ESPERADOS = [
     "Será Firmado Contrato", "Contratos (Resumo)", "Aditivos (Resumo)"
 ]
 
-def obter_cliente_gspread():
-    """Autentica na API do Google Sheets via Secret do GitHub ou arquivo local."""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
+def obter_servico_sheets():
+    """Conecta diretamente à Google Sheets API v4 (sem passar pelo Google Drive)."""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     json_str = os.environ.get("GOOGLE_DRIVE_JSON")
     
     if json_str:
-        print("Autenticando via Secret do GitHub Actions (GOOGLE_DRIVE_JSON)...")
+        print("Autenticando via Secret do GitHub Actions...")
         credentials_info = json.loads(json_str)
         creds = Credentials.from_service_account_info(credentials_info, scopes=scopes)
     else:
         print("Secret não encontrada. Tentando arquivo local 'credentials.json'...")
         creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
         
-    return gspread.authorize(creds)
+    return build('sheets', 'v4', credentials=creds)
 
 def extrair_dados_ficha(url: str) -> dict:
     """Acessa a URL da ficha técnica no TCM-PA e raspa os 26 campos."""
@@ -129,40 +126,30 @@ def extrair_dados_ficha(url: str) -> dict:
     return dados
 
 def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
-    """Executa a leitura da planilha principal, faz o scraping e grava no destino."""
     print(f"=== INICIANDO ROBÔ DE LICITAÇÕES (Modo Teste: {modo_teste}) ===")
 
-    client = obter_cliente_gspread()
+    service = obter_servico_sheets()
+    sheets = service.spreadsheets()
 
-    # 1. Conectar via URL (Abre direto a Sheets API)
-    print("Conectando à planilha de ORIGEM via URL...")
-    sh_origem = client.open_by_url(URL_ORIGEM)
-    ws_origem = sh_origem.worksheet("licitacoes_2026")
+    # 1. Ler Coluna C da Planilha de Origem via Sheets API v4
+    print(f"Lendo URLs da planilha de ORIGEM...")
+    intervalo_busca = f"{ABA_ENTRADA}!C2:C"
+    resultado = sheets.values().get(spreadsheetId=PLANILHA_ENTRADA_ID, range=intervalo_busca).execute()
+    linhas_coluna_c = resultado.get('values', [])
 
-    # Extrai os links da Coluna C (linha 2 em diante)
-    coluna_c = ws_origem.col_values(3)
-    urls = [url.strip() for url in coluna_c[1:] if url.strip().startswith("http")]
+    urls = [row[0].strip() for row in linhas_coluna_c if row and row[0].strip().startswith("http")]
 
     print(f"Total de URLs encontradas na Coluna C: {len(urls)}")
 
     if not urls:
-        print("Nenhuma URL válida encontrada na aba 'licitacoes_2026'. Encerrando.")
+        print("Nenhuma URL válida encontrada. Encerrando.")
         return
 
     if modo_teste:
         urls = urls[:limite_teste]
         print(f"-> MODO TESTE ATIVO: Processando apenas os {len(urls)} primeiros links.")
 
-    # 2. Conectar à Planilha de Destino via URL
-    print("Conectando à planilha de DESTINO via URL...")
-    sh_destino = client.open_by_url(URL_DESTINO)
-    ws_destino = sh_destino.sheet1
-
-    # Adiciona o cabeçalho se a aba estiver vazia
-    if not ws_destino.row_values(1):
-        ws_destino.append_row(CABECALHOS_ESPERADOS)
-
-    # 3. Processamento
+    # 2. Raspagem de Dados
     novas_linhas = []
     for idx, url in enumerate(urls, start=1):
         print(f"[{idx}/{len(urls)}] Extraindo: {url}")
@@ -171,10 +158,18 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
         novas_linhas.append(linha)
         time.sleep(1)
 
-    # 4. Salvar
+    # 3. Gravar na Planilha de Destino via Sheets API v4
     if novas_linhas:
         print("Gravando dados na planilha 'Abas_Detalhes_Fato'...")
-        ws_destino.append_rows(novas_linhas, value_input_option="USER_ENTERED")
+        body = {'values': novas_linhas}
+        sheets.values().append(
+            spreadsheetId=PLANILHA_SAIDA_ID,
+            range="A1",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body=body
+        ).execute()
+        
         print(f"=== SUCESSO! {len(novas_linhas)} linhas inseridas com êxito! ===")
 
 if __name__ == "__main__":
