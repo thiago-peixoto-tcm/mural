@@ -8,7 +8,7 @@ from googleapiclient.discovery import build
 
 # --- CONFIGURAÇÕES DE PLANILHA ---
 PLANILHA_ENTRADA_ID = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
-ABA_ENTRADA = "licitacoes_2026"  # Garantido: com underline!
+ABA_ENTRADA = "licitacoes_2026"
 
 PLANILHA_SAIDA_ID = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
 
