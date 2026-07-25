@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 PLANILHA_ENTRADA_KEY = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
 PLANILHA_SAIDA_KEY = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
 
-# 27 Colunas Exatas
+# 27 Colunas Exatas (Link Ficha na Coluna A + 26 Campos das Fichas)
 CABECALHOS_ESPERADOS = [
     "Link Ficha", "Documentos", "Publicidades", "Participantes", "Lotes & Itens",
     "Contratos", "Aditivos", "LICITAÇÃO", "Nº do Processo Administrativo",
@@ -137,12 +137,8 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
 
     # 1. Conectar e Ler a Planilha de Origem
     print(f"Conectando à planilha de ORIGEM [ID: {PLANILHA_ENTRADA_KEY}]...")
-    try:
-        sh_origem = client.open_by_key(PLANILHA_ENTRADA_KEY)
-        ws_origem = sh_origem.worksheet("licitacoes_2026")
-    except Exception as err:
-        print(f"Erro ao abrir planilha de origem: {err}")
-        raise err
+    sh_origem = client.open_by_key(PLANILHA_ENTRADA_KEY)
+    ws_origem = sh_origem.worksheet("licitacoes_2026")
 
     # Extrai os links da Coluna C (a partir da linha 2)
     coluna_c = ws_origem.col_values(3)
@@ -160,12 +156,8 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
 
     # 2. Conectar à Planilha de Destino
     print(f"Conectando à planilha de DESTINO [ID: {PLANILHA_SAIDA_KEY}]...")
-    try:
-        sh_destino = client.open_by_key(PLANILHA_SAIDA_KEY)
-        ws_destino = sh_destino.sheet1
-    except Exception as err:
-        print(f"Erro ao abrir planilha de destino: {err}")
-        raise err
+    sh_destino = client.open_by_key(PLANILHA_SAIDA_KEY)
+    ws_destino = sh_destino.sheet1
 
     # Adiciona o cabeçalho se a aba estiver em branco
     if not ws_destino.row_values(1):
