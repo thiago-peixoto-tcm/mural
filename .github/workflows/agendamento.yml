@@ -1,6 +1,6 @@
 name: Robô Diário de Licitações
 
-   on:
+on:
   schedule:
     # Dispara às 23:51 (Horário de Brasília) / 02:51 UTC
     - cron: '51 2 * * *'
