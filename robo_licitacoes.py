@@ -6,11 +6,11 @@ from bs4 import BeautifulSoup
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- CONFIGURAÇÃO DOS IDS DAS PLANILHAS ---
-PLANILHA_ENTRADA_KEY = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
-PLANILHA_SAIDA_KEY = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
+# --- URLS COMPLETAS DAS PLANILHAS (Evita a busca v3 no Drive que gera o 404) ---
+URL_ORIGEM = "https://docs.google.com/spreadsheets/d/1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs/edit"
+URL_DESTINO = "https://docs.google.com/spreadsheets/d/1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U/edit"
 
-# 27 Colunas Exatas (Link Ficha na Coluna A + 26 Campos das Fichas)
+# 27 Colunas Exatas
 CABECALHOS_ESPERADOS = [
     "Link Ficha", "Documentos", "Publicidades", "Participantes", "Lotes & Itens",
     "Contratos", "Aditivos", "LICITAÇÃO", "Nº do Processo Administrativo",
@@ -26,8 +26,7 @@ def obter_cliente_gspread():
     """Autentica na API do Google Sheets via Secret do GitHub ou arquivo local."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/drive.file"
+        "https://www.googleapis.com/auth/drive"
     ]
     
     json_str = os.environ.get("GOOGLE_DRIVE_JSON")
@@ -75,7 +74,7 @@ def extrair_dados_ficha(url: str) -> dict:
                 if badge:
                     dados[nome_campo] = badge.get_text(strip=True)
 
-        # 2. Número da Licitação (#005/2026-CMAC)
+        # 2. Número da Licitação
         lic_num = soup.find("h5", class_="text-blue")
         if lic_num:
             dados["LICITAÇÃO"] = lic_num.get_text(strip=True)
@@ -135,12 +134,12 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
 
     client = obter_cliente_gspread()
 
-    # 1. Conectar e Ler a Planilha de Origem
-    print(f"Conectando à planilha de ORIGEM [ID: {PLANILHA_ENTRADA_KEY}]...")
-    sh_origem = client.open_by_key(PLANILHA_ENTRADA_KEY)
+    # 1. Conectar via URL (Abre direto a Sheets API)
+    print("Conectando à planilha de ORIGEM via URL...")
+    sh_origem = client.open_by_url(URL_ORIGEM)
     ws_origem = sh_origem.worksheet("licitacoes_2026")
 
-    # Extrai os links da Coluna C (a partir da linha 2)
+    # Extrai os links da Coluna C (linha 2 em diante)
     coluna_c = ws_origem.col_values(3)
     urls = [url.strip() for url in coluna_c[1:] if url.strip().startswith("http")]
 
@@ -154,16 +153,16 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
         urls = urls[:limite_teste]
         print(f"-> MODO TESTE ATIVO: Processando apenas os {len(urls)} primeiros links.")
 
-    # 2. Conectar à Planilha de Destino
-    print(f"Conectando à planilha de DESTINO [ID: {PLANILHA_SAIDA_KEY}]...")
-    sh_destino = client.open_by_key(PLANILHA_SAIDA_KEY)
+    # 2. Conectar à Planilha de Destino via URL
+    print("Conectando à planilha de DESTINO via URL...")
+    sh_destino = client.open_by_url(URL_DESTINO)
     ws_destino = sh_destino.sheet1
 
-    # Adiciona o cabeçalho se a aba estiver em branco
+    # Adiciona o cabeçalho se a aba estiver vazia
     if not ws_destino.row_values(1):
         ws_destino.append_row(CABECALHOS_ESPERADOS)
 
-    # 3. Processamento Linha a Linha
+    # 3. Processamento
     novas_linhas = []
     for idx, url in enumerate(urls, start=1):
         print(f"[{idx}/{len(urls)}] Extraindo: {url}")
@@ -172,7 +171,7 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
         novas_linhas.append(linha)
         time.sleep(1)
 
-    # 4. Salvar na Planilha Fato
+    # 4. Salvar
     if novas_linhas:
         print("Gravando dados na planilha 'Abas_Detalhes_Fato'...")
         ws_destino.append_rows(novas_linhas, value_input_option="USER_ENTERED")
