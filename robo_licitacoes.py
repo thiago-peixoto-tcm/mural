@@ -129,17 +129,23 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
     service = obter_servico_sheets()
     sheets = service.spreadsheets()
 
-    # 1. Ler Coluna C da Planilha de Origem (sem aspas simples na string)
+   # 1. Ler Coluna C da Planilha de Origem
     print(f"Lendo URLs da planilha de ORIGEM (Aba: {ABA_ENTRADA})...")
     intervalo_busca = f"{ABA_ENTRADA}!C2:C"
     
     resultado = sheets.values().get(spreadsheetId=PLANILHA_ENTRADA_ID, range=intervalo_busca).execute()
     linhas_coluna_c = resultado.get('values', [])
 
-    urls = [row[0].strip() for row in linhas_coluna_c if row and row[0].strip().startswith("http")]
+    # Pega qualquer link que contenha 'http' ou 'tcmpa'
+    urls = []
+    for row in linhas_coluna_c:
+        if row and len(row) > 0:
+            val = row[0].strip()
+            if "tcmpa" in val or val.startswith("http"):
+                urls.append(val)
 
     print(f"Total de URLs encontradas na Coluna C: {len(urls)}")
-
+    
     if not urls:
         print("Nenhuma URL válida encontrada. Encerrando.")
         return
