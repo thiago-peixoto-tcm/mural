@@ -1,0 +1,35 @@
+name: Robô Fichas Licitações TCM-PA
+
+on:
+  schedule:
+    # Executa diariamente às 05:31 da manhã (Horário de Brasília / UTC-3 = 08:31 UTC)
+    - cron: '31 8 * * *'
+  workflow_dispatch: # Permite disparar o robô manualmente pelo botão do GitHub Actions
+
+jobs:
+  executar-robo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 gspread google-auth
+
+      - name: Executar Script Python
+        env:
+          # Injeta a Secret 'GOOGLE_DRIVE_JSON' para o Python ler
+          GOOGLE_DRIVE_JSON: ${{ secrets.GOOGLE_DRIVE_JSON }}
+          
+          # Mude para "true" para rodar 5 linhas (teste) ou "false" para rodar tudo
+          MODO_TESTE: "true"
+        run: |
+          python robo_licitacoes.py
