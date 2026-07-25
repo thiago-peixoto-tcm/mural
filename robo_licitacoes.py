@@ -129,9 +129,9 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
     service = obter_servico_sheets()
     sheets = service.spreadsheets()
 
-    # 1. Ler Coluna C da Planilha de Origem
-    print(f"Lendo URLs da planilha de ORIGEM (Aba: '{ABA_ENTRADA}')...")
-    intervalo_busca = f"'{ABA_ENTRADA}'!C2:C"
+    # 1. Ler Coluna C da Planilha de Origem (sem aspas simples na string)
+    print(f"Lendo URLs da planilha de ORIGEM (Aba: {ABA_ENTRADA})...")
+    intervalo_busca = f"{ABA_ENTRADA}!C2:C"
     
     resultado = sheets.values().get(spreadsheetId=PLANILHA_ENTRADA_ID, range=intervalo_busca).execute()
     linhas_coluna_c = resultado.get('values', [])
@@ -170,7 +170,3 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
         ).execute()
         
         print(f"=== SUCESSO! {len(novas_linhas)} linhas inseridas com êxito! ===")
-
-if __name__ == "__main__":
-    is_teste = os.environ.get("MODO_TESTE", "true").lower() == "true"
-    executar_robo(modo_teste=is_teste, limite_teste=5)
