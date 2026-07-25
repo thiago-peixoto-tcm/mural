@@ -8,7 +8,7 @@ from googleapiclient.discovery import build
 
 # --- CONFIGURAÇÕES DE PLANILHA ---
 PLANILHA_ENTRADA_ID = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
-ABA_ENTRADA = "licitacoes_2026"
+ABA_ENTRADA = "licitacoes_2026"  # Garantido: com underline!
 
 PLANILHA_SAIDA_ID = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
 
@@ -185,6 +185,5 @@ def executar_robo(modo_teste: bool = True, limite_teste: int = 5):
         print("==================================================")
 
 if __name__ == "__main__":
-    # Pega da variável de ambiente ou padroniza como MODO_TESTE = True (5 links)
     modo_env = os.environ.get("MODO_TESTE", "true").lower() == "true"
     executar_robo(modo_teste=modo_env, limite_teste=5)
