@@ -8,7 +8,7 @@ from googleapiclient.discovery import build
 
 # --- CONFIGURAÇÃO DOS IDS E ABAS ---
 PLANILHA_ENTRADA_ID = "1UTIgbvelQP4CMNblsB9WDfNvKMdi17Sl8I7EQer_GEs"
-ABA_ENTRADA = "licitacoes_2026"
+ABA_ENTRADA = "licitacoes_2026"  # Garantido: com underline conforme sua foto!
 
 PLANILHA_SAIDA_ID = "1HwVDWliIufg3OTUhadyBBJ_0yhNmRBISYUh4_2_wO4U"
 
@@ -24,7 +24,7 @@ CABECALHOS_ESPERADOS = [
 ]
 
 def obter_servico_sheets():
-    """Conecta diretamente à Google Sheets API v4 (sem passar pelo Google Drive)."""
+    """Conecta diretamente à Google Sheets API v4."""
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     json_str = os.environ.get("GOOGLE_DRIVE_JSON")
     
@@ -39,7 +39,7 @@ def obter_servico_sheets():
     return build('sheets', 'v4', credentials=creds)
 
 def extrair_dados_ficha(url: str) -> dict:
-    """Acessa a URL da ficha técnica no TCM-PA e raspa os 26 campos."""
+    """Acessa a URL da ficha técnica no TCM-PA e raspa os campos."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -55,7 +55,7 @@ def extrair_dados_ficha(url: str) -> dict:
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # 1. Contadores das Abas
+        # Contadores das Abas
         abas_map = {
             "#documentos": "Documentos",
             "#publicidades": "Publicidades",
@@ -71,16 +71,15 @@ def extrair_dados_ficha(url: str) -> dict:
                 if badge:
                     dados[nome_campo] = badge.get_text(strip=True)
 
-        # 2. Número da Licitação
+        # Número da Licitação
         lic_num = soup.find("h5", class_="text-blue")
         if lic_num:
             dados["LICITAÇÃO"] = lic_num.get_text(strip=True)
 
-        # 3. Painel da Esquerda (bill-to)
+        # Painel Esquerda
         bill_to = soup.find("div", class_="bill-to")
         if bill_to:
-            p_tags = bill_to.find_all("p")
-            for p in p_tags:
+            for p in bill_to.find_all("p"):
                 texto_p = p.get_text(separator=" ", strip=True)
                 if ":" in texto_p:
                     partes = texto_p.split(":", 1)
@@ -92,11 +91,10 @@ def extrair_dados_ficha(url: str) -> dict:
                             dados[col] = valor
                             break
 
-        # 4. Painel da Direita (bill-data)
+        # Painel Direita
         bill_data = soup.find("div", class_="bill-data")
         if bill_data:
-            spans = bill_data.find_all("span", class_="text-dark")
-            for span in spans:
+            for span in bill_data.find_all("span", class_="text-dark"):
                 texto_span = span.get_text(separator=" ", strip=True)
                 if ":" in texto_span:
                     partes = texto_span.split(":", 1)
@@ -131,9 +129,10 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
     service = obter_servico_sheets()
     sheets = service.spreadsheets()
 
-    # 1. Ler Coluna C da Planilha de Origem via Sheets API v4
-    print(f"Lendo URLs da planilha de ORIGEM...")
-    intervalo_busca = f"{ABA_ENTRADA}!C2:C"
+    # 1. Ler Coluna C da Planilha de Origem
+    print(f"Lendo URLs da planilha de ORIGEM (Aba: '{ABA_ENTRADA}')...")
+    intervalo_busca = f"'{ABA_ENTRADA}'!C2:C"
+    
     resultado = sheets.values().get(spreadsheetId=PLANILHA_ENTRADA_ID, range=intervalo_busca).execute()
     linhas_coluna_c = resultado.get('values', [])
 
@@ -158,7 +157,7 @@ def executar_robo(modo_teste: bool = False, limite_teste: int = 5):
         novas_linhas.append(linha)
         time.sleep(1)
 
-    # 3. Gravar na Planilha de Destino via Sheets API v4
+    # 3. Gravar na Planilha de Destino
     if novas_linhas:
         print("Gravando dados na planilha 'Abas_Detalhes_Fato'...")
         body = {'values': novas_linhas}
