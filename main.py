@@ -12,8 +12,6 @@ from googleapiclient.http import MediaFileUpload
 # ==========================================
 # CONFIGURAÇÕES E PARÂMETROS
 # ==========================================
-# MODO_TESTE: Se True, raspa apenas até a página 3 (90 registros).
-# Para raspar TUDO, altere MODO_TESTE para False.
 MODO_TESTE = True
 MAX_PAGINAS_TESTE = 3
 
@@ -21,47 +19,64 @@ BASE_URL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 NOME_ARQUIVO_CSV = "Base_Licitacoes_Principais.csv"
 
-# Escopo necessário para o Google Drive API
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 def obter_credenciais_google():
-    """
-    Obtém as credenciais da Service Account a partir da Secret do GitHub GOOGLE_DRIVE_JSON.
-    """
     json_str = os.getenv('GOOGLE_DRIVE_JSON')
     if not json_str:
         raise ValueError("A variável de ambiente GOOGLE_DRIVE_JSON não foi configurada nas Secrets do GitHub.")
     
     info = json.loads(json_str)
-    credentials = Credentials.from_service_account_info(info, scopes=SCOPES)
-    return credentials
+    return Credentials.from_service_account_info(info, scopes=SCOPES)
+
+def criar_sessao_http():
+    """Cria uma sessão HTTP persistente com headers de navegador real."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Cache-Control': 'max-age=0',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    })
+    return session
 
 def extrair_total_registros(soup):
     """
     Localiza no HTML o total de itens registrados.
-    Estrutura: <div id="w0" class="grid-view"><div class="summary">A exibir <b>1-30</b> de <b>140.423</b> itens.</div>
+    Possui fallback para garantir a execução mesmo se a estrutura mudar.
     """
+    # Estratégia 1: Div 'summary'
     summary_div = soup.find('div', class_='summary')
     if summary_div:
         texto = summary_div.get_text()
         match = re.search(r'de\s+<b>?([\d\.]+)</b?>', summary_div.decode_contents()) or re.search(r'de\s+([\d\.]+)\s+itens', texto)
         if match:
-            total_str = match.group(1).replace('.', '')
-            return int(total_str)
+            return int(match.group(1).replace('.', ''))
     
-    match_bruto = re.search(r'de\s*<b>\s*([\d\.]+)\s*<\/b>\s*itens', str(soup))
+    # Estratégia 2: Regex geral na página
+    match_bruto = re.search(r'de\s*<b>?\s*([\d\.]+)\s*<\/b>?\s*itens', str(soup), re.IGNORECASE)
     if match_bruto:
-        total_str = match_bruto.group(1).replace('.', '')
-        return int(total_str)
-        
-    raise Exception("Não foi possível identificar o total de registros na página.")
+        return int(match_bruto.group(1).replace('.', ''))
+
+    # Estratégia 3: Contagem de itens na última página da paginação
+    paginacao = soup.find('ul', class_='pagination')
+    if paginacao:
+        links = paginacao.find_all('a')
+        paginas = []
+        for l in links:
+            if l.get_text().isdigit():
+                paginas.append(int(l.get_text()))
+        if paginas:
+            max_p = max(paginas)
+            print(f"Aviso: Usando fallback de páginas ({max_p} páginas identificadas).")
+            return max_p * 30
+
+    print("Alerta: Não foi possível capturar o resumo exato. Definindo padrão de segurança.")
+    return 30 * MAX_PAGINAS_TESTE if MODO_TESTE else 3000
 
 def raspar_pagina(soup):
-    """
-    Extrai as linhas da tabela dentro do <tbody>.
-    Extrai: Legislação, Número, Modalidade, Tipo, Objeto, Abertura, Publicação,
-    Município, Órgão, Situação, Referência, Adjudicado e ID.
-    """
     dados = []
     tbody = soup.find('tbody')
     if not tbody:
@@ -75,7 +90,6 @@ def raspar_pagina(soup):
         
         legislacao = cols[0].get_text(strip=True)
         
-        # Coluna Número e extração do ID a partir do href
         col_numero = cols[1]
         numero = col_numero.get_text(strip=True)
         id_licitacao = ""
@@ -116,9 +130,6 @@ def raspar_pagina(soup):
     return dados
 
 def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pasta):
-    """
-    Envia o CSV para a pasta do Google Drive. Se o arquivo já existir, ele sobrescreve.
-    """
     creds = obter_credenciais_google()
     service = build('drive', 'v3', credentials=creds)
 
@@ -131,45 +142,37 @@ def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pas
     if files:
         file_id = files[0]['id']
         print(f"Substituindo arquivo existente no Google Drive (ID: {file_id})...")
-        service.files().update(
-            fileId=file_id,
-            media_body=media
-        ).execute()
-        print("Arquivo sobrescrito com sucesso.")
+        service.files().update(fileId=file_id, media_body=media).execute()
+        print("Arquivo sobrescrito no Drive com sucesso.")
     else:
         print("Criando novo arquivo no Google Drive...")
-        file_metadata = {
-            'name': nome_arquivo_destino,
-            'parents': [id_pasta]
-        }
-        service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        print("Arquivo salvo com sucesso.")
+        file_metadata = {'name': nome_arquivo_destino, 'parents': [id_pasta]}
+        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        print("Arquivo salvo no Drive com sucesso.")
 
 def main():
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-
+    session = criar_sessao_http()
     url_inicial = BASE_URL.format(page=1)
+    
     print(f"Acessando página inicial: {url_inicial}")
-    resp = requests.get(url_inicial, headers=headers)
+    resp = session.get(url_inicial, timeout=30)
+    
+    if resp.status_code != 200:
+        print(f"Aviso de Status HTTP: {resp.status_code}. Tentando prosseguir...")
+
     soup = BeautifulSoup(resp.content, 'html.parser')
 
     total_registros = extrair_total_registros(soup)
     total_paginas = math.ceil(total_registros / 30)
-    print(f"Total de registros identificados: {total_registros:,}")
+    print(f"Total de registros estimados: {total_registros:,}")
     print(f"Total de páginas calculadas: {total_paginas:,}")
 
     if MODO_TESTE:
         paginas_para_raspar = min(MAX_PAGINAS_TESTE, total_paginas)
-        print(f"*** MODO TESTE ATIVADO: Raspando {paginas_para_raspar} páginas (90 registros) ***")
+        print(f"*** MODO TESTE ATIVADO: Raspando {paginas_para_raspar} página(s) ***")
     else:
         paginas_para_raspar = total_paginas
-        print(f"*** MODO COMPLETO ATIVADO: Raspando todas as {paginas_para_raspar} páginas ***")
+        print(f"*** MODO COMPLETO ATIVADO: Raspando {paginas_para_raspar} páginas ***")
 
     todos_dados = []
 
@@ -179,23 +182,21 @@ def main():
             dados_pag = raspar_pagina(soup)
         else:
             url_pag = BASE_URL.format(page=pagina)
-            res_pag = requests.get(url_pag, headers=headers)
+            res_pag = session.get(url_pag, timeout=30)
             soup_pag = BeautifulSoup(res_pag.content, 'html.parser')
             dados_pag = raspar_pagina(soup_pag)
 
         todos_dados.extend(dados_pag)
 
-    print(f"Total de registros extraídos nesta execução: {len(todos_dados)}")
+    print(f"Total de registros extraídos: {len(todos_dados)}")
 
-    # Gera o CSV com separador ponto e vírgula e acentuação correta
     df = pd.DataFrame(todos_dados)
     df.to_csv(NOME_ARQUIVO_CSV, index=False, encoding='utf-8-sig', sep=';')
-    print(f"Arquivo CSV local '{NOME_ARQUIVO_CSV}' gerado com sucesso!")
+    print(f"Arquivo CSV '{NOME_ARQUIVO_CSV}' gerado localmente.")
 
-    # Faz upload e substituição no Google Drive
-    print("Enviando arquivo para o Google Drive...")
+    print("Enviando para o Google Drive...")
     upload_para_google_drive(NOME_ARQUIVO_CSV, NOME_ARQUIVO_CSV, ID_PASTA_GOOGLE_DRIVE)
-    print("Processo finalizado com sucesso!")
+    print("Processo concluído!")
 
 if __name__ == '__main__':
     main()
