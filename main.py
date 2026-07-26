@@ -118,34 +118,44 @@ def raspar_pagina(soup):
 
 def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pasta):
     """
-    Envia/Atualiza o CSV no Google Drive contornando a restrição de quota da Service Account.
+    Substitui o conteúdo do arquivo existente no Google Drive para evitar problemas de cota.
     """
     creds = obter_credenciais_google()
     service = build('drive', 'v3', credentials=creds)
 
-    # Busca se o arquivo já existe na pasta
-    query = f"'{id_pasta}' in parents and name = '{nome_arquivo_destino}' and trashed = false"
+    # Remove extensões para comparação se necessário (ex: compara 'Base_Licitacoes_Principais' com ou sem .csv)
+    nome_sem_extensao = os.path.splitext(nome_arquivo_destino)[0]
+
+    # Busca abrangente dentro da pasta
+    query = f"'{id_pasta}' in parents and trashed = false"
     response = service.files().list(
         q=query, 
         fields='files(id, name)',
         supportsAllDrives=True,
         includeItemsFromAllDrives=True
     ).execute()
+    
     files = response.get('files', [])
+    file_id = None
+
+    # Procura um arquivo correspondente pelo nome exato ou sem extensão
+    for f in files:
+        if f['name'] == nome_arquivo_destino or f['name'] == nome_sem_extensao:
+            file_id = f['id']
+            break
 
     media = MediaFileUpload(caminho_arquivo_local, mimetype='text/csv', resumable=True)
 
-    if files:
-        file_id = files[0]['id']
-        print(f"Substituindo arquivo existente no Google Drive (ID: {file_id})...")
+    if file_id:
+        print(f"Arquivo existente localizado no Google Drive (ID: {file_id}). Atualizando conteúdo...")
         service.files().update(
             fileId=file_id, 
             media_body=media,
             supportsAllDrives=True
         ).execute()
-        print("Arquivo sobrescrito com sucesso!")
+        print("Arquivo atualizado com sucesso!")
     else:
-        print("Criando arquivo na pasta compartilhada do Google Drive...")
+        print("Arquivo não encontrado na pasta. Criando novo arquivo...")
         file_metadata = {
             'name': nome_arquivo_destino, 
             'parents': [id_pasta]
