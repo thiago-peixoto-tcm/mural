@@ -49,26 +49,36 @@ def extrair_total_registros(soup):
 
 def raspar_pagina(soup):
     dados = []
-    tabela = soup.find('table')
+    
+    # Busca a tabela por container comum do framework ou por tag table direta
+    container = soup.find('div', id='w0') or soup.find('div', class_='grid-view')
+    tabela = container.find('table') if container else soup.find('table')
+    
     if not tabela:
         return dados
 
-    rows = tabela.find_all('tr')
+    # Pega todas as linhas do corpo da tabela ou da tabela inteira
+    tbody = tabela.find('tbody')
+    rows = tbody.find_all('tr') if tbody else tabela.find_all('tr')
+
     for row in rows:
         cols = row.find_all('td')
-        if len(cols) < 10:
+        # Ignora cabeçalhos ou linhas sem colunas suficientes
+        if len(cols) < 5:
             continue
         
-        legislacao = cols[0].get_text(strip=True)
+        legislacao = cols[0].get_text(strip=True) if len(cols) > 0 else ""
         
-        col_numero = cols[1]
-        numero = col_numero.get_text(strip=True)
+        col_numero = cols[1] if len(cols) > 1 else None
+        numero = col_numero.get_text(strip=True) if col_numero else ""
+        
         id_licitacao = ""
-        link_tag = col_numero.find('a')
-        if link_tag and 'href' in link_tag.attrs:
-            match_id = re.search(r'/ficha/(\d+)', link_tag['href'])
-            if match_id:
-                id_licitacao = match_id.group(1)
+        if col_numero:
+            link_tag = col_numero.find('a')
+            if link_tag and 'href' in link_tag.attrs:
+                match_id = re.search(r'/ficha/(\d+)', link_tag['href'])
+                if match_id:
+                    id_licitacao = match_id.group(1)
 
         modalidade = cols[2].get_text(strip=True) if len(cols) > 2 else ""
         tipo = cols[3].get_text(strip=True) if len(cols) > 3 else ""
