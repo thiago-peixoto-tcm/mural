@@ -11,7 +11,6 @@ from google.oauth2.service_account import Credentials
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
 
-# Domínio e URLs atualizadas
 BASE_URL = "https://www.tcmpa.tc.br"
 URL_BASE_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
 
@@ -21,11 +20,11 @@ HEADERS = {
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
-# No modo teste, usamos menos workers para evitar bloqueios
+# Quantidade segura de conexões simultâneas
 MAX_WORKERS = 3 
 
 def obter_total_paginas():
-    """Acessa a primeira página para descobrir o total de registros e calcula o total de páginas."""
+    """Acessa a primeira página para ler o total de registros do resumo da grid."""
     url = URL_BASE_PAGINA.format(1)
     try:
         response = requests.get(url, headers=HEADERS, timeout=15)
@@ -34,11 +33,12 @@ def obter_total_paginas():
         summary_div = soup.find('div', class_='summary')
         if summary_div:
             texto = summary_div.get_text()
+            # Procura o padrão "de 140.423 itens"
             match = re.search(r'de\s+([\d\.]+)', texto)
             if match:
                 total_itens = int(match.group(1).replace('.', ''))
                 total_paginas = math.ceil(total_itens / 30)
-                print(f"📊 Total de licitações no site: {total_itens:,} | Total de Páginas: {total_paginas}")
+                print(f"📊 Total de licitações identificadas: {total_itens:,} | Total Páginas: {total_paginas}")
                 return total_paginas
     except Exception as e:
         print(f"⚠️ Erro ao calcular total de páginas: {e}")
@@ -46,7 +46,7 @@ def obter_total_paginas():
     return 4677
 
 def extrair_pagina(pagina, retentativas=3):
-    """Lê uma única página com suporte a retentativas."""
+    """Lê uma página e extrai as linhas exatamente conforme o HTML do TCMPA."""
     url = URL_BASE_PAGINA.format(pagina)
     for tentativa in range(1, retentativas + 1):
         try:
@@ -54,29 +54,27 @@ def extrair_pagina(pagina, retentativas=3):
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                div_tabela = soup.find('div', id='w0') or soup.find('table')
+                # CORREÇÃO CRÍTICA: O ID correto da div no HTML do TCMPA é 'w1'
+                div_tabela = soup.find('div', id='w1') or soup.find('div', class_='grid-view')
                 if not div_tabela:
                     return pagina, []
                 
-                table = div_tabela.find('table') if div_tabela.name != 'table' else div_tabela
-                if not table:
+                tbody = div_tabela.find('tbody')
+                if not tbody:
                     return pagina, []
 
-                tbody = table.find('tbody')
-                rows = tbody.find_all('tr') if tbody else table.find_all('tr')
+                # Captura APENAS as linhas do corpo da tabela (ignorando os filtros do header)
+                rows = tbody.find_all('tr')
                 linhas = []
                 
                 for row in rows:
                     cols = row.find_all('td')
                     
-                    if len(cols) == 12:
+                    # Cada linha de licitação válida possui exatamente 12 colunas
+                    if len(cols) >= 12:
                         link_tag = cols[1].find('a')
                         numero_texto = link_tag.get_text(strip=True) if link_tag else cols[1].get_text(strip=True)
                         
-                        # Descarta eventual linha de filtro
-                        if numero_texto.lower() in ["número", "numero", ""]:
-                            continue
-
                         link_ficha = ""
                         if link_tag and 'href' in link_tag.attrs:
                             href = link_tag['href']
@@ -115,19 +113,19 @@ def conectar_google_sheets():
 def executar(modo_teste=True, limite_paginas_teste=3):
     inicio_tempo = time.time()
     
-    # 1. Obtém o total real de páginas do site
-    paginas_para_rodar = obter_total_paginas()
+    total_paginas = obter_total_paginas()
     
-    # 2. Se o modo teste estiver ativo, força a parada na página 3
+    # Lógica do Modo Teste
     if modo_teste:
-        paginas_para_rodar = min(limite_paginas_teste, paginas_para_rodar)
-        print(f"\n🧪 MODO TESTE ATIVADO: Raspando apenas as primeiras {paginas_para_rodar} páginas (≈{paginas_para_rodar * 30} registros)...")
+        paginas_para_rodar = min(limite_paginas_teste, total_paginas)
+        print(f"\n🧪 MODO TESTE ATIVADO: Baixando {paginas_para_rodar} páginas (≈{paginas_para_rodar * 30} registros)...")
     else:
+        paginas_para_rodar = total_paginas
         print(f"\n🚀 MODO COMPLETO: Baixando todas as {paginas_para_rodar} páginas...")
 
     todas_linhas = [None] * paginas_para_rodar
 
-    # 3. Execução das requisições em paralelo
+    # Execução paralela
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(extrair_pagina, pag): pag for pag in range(1, paginas_para_rodar + 1)}
         
@@ -138,19 +136,19 @@ def executar(modo_teste=True, limite_paginas_teste=3):
             concluidos += 1
             print(f"  └─ Página {pag} extraída ({len(linhas)} itens) | Progresso: {concluidos}/{paginas_para_rodar}")
 
-    # 4. Junta todas as linhas capturadas
+    # Junta o resultado mantendo a ordem
     dados_finais = []
     for bloco in todas_linhas:
         if bloco:
             dados_finais.extend(bloco)
 
-    print(f"\n✅ Raspagem concluída! Total de {len(dados_finais)} licitações extraídas.")
-    
-    # Exemplo visual no terminal
-    if dados_finais:
-        print(f"🔍 Exemplo do primeiro registro capturado: {dados_finais[0][1]} | Valor Ref: {dados_finais[0][11]}")
+    print(f"\n✅ Raspagem concluída! Total de {len(dados_finais)} registros extraídos.")
 
-    print("📤 Enviando para o Google Sheets...")
+    if not dados_finais:
+        print("❌ Nenhum dado foi extraído. Verifique se o site bloqueou o IP ou mudou de estrutura.")
+        return
+
+    print("📤 Enviando os dados para o Google Sheets...")
 
     sheet = conectar_google_sheets()
     
@@ -160,21 +158,21 @@ def executar(modo_teste=True, limite_paginas_teste=3):
         'Órgão', 'Situação', 'Valor Referência (R$)', 'Valor Adjudicado (R$)'
     ]]
     
-    # Limpa e atualiza o cabeçalho
+    # Limpa a planilha e escreve o cabeçalho na linha 1
     sheet.clear()
     sheet.update('A1', cabecalho)
     
-    # Envia os dados para a planilha
+    # Envia os lotes para o Google Sheets
     TAMANHO_LOTE = 2000
     for i in range(0, len(dados_finais), TAMANHO_LOTE):
         lote = dados_finais[i:i + TAMANHO_LOTE]
         sheet.append_rows(lote)
-        print(f"📊 Lote {i//TAMANHO_LOTE + 1} enviado ({len(lote)} linhas)...")
+        print(f"📊 Lote enviado ({len(lote)} linhas)...")
         time.sleep(1)
 
-    tempo_decorrido = (time.time() - inicio_tempo)
-    print(f"\n🎉 Teste concluído com sucesso em {tempo_decorrido:.2f} segundos!")
+    tempo_decorrido = time.time() - inicio_tempo
+    print(f"\n🎉 Processo concluído em {tempo_decorrido:.2f} segundos!")
 
 if __name__ == "__main__":
-    # Roda em modo teste (apenas 3 páginas)
+    # Roda em modo teste (apenas 3 páginas / ~90 linhas)
     executar(modo_teste=True)
