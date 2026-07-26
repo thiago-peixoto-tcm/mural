@@ -94,10 +94,13 @@ def salvar_csv_drive(dados):
     nome_arquivo = "Base_Licitacoes_Principais.csv"
     df.to_csv(nome_arquivo, index=False, encoding="utf-8-sig")
 
+    # Autenticação com PyDrive2 usando credenciais de serviço
     gauth = GoogleAuth()
-    gauth.LoadCredentialsFile("credentials.json")
+    gauth.settings['client_config_file'] = "credentials.json"
+    gauth.ServiceAuth()
     drive = GoogleDrive(gauth)
 
+    # Procurar se já existe arquivo com esse nome na pasta
     file_list = drive.ListFile({'q': f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed=false"}).GetList()
     file_id = None
     for f in file_list:
