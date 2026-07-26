@@ -49,7 +49,6 @@ def extrair_total_registros(soup):
 
 def raspar_pagina(soup):
     dados = []
-    # Busca por qualquer tabela presente na página
     tabela = soup.find('table')
     if not tabela:
         return dados
@@ -57,7 +56,6 @@ def raspar_pagina(soup):
     rows = tabela.find_all('tr')
     for row in rows:
         cols = row.find_all('td')
-        # Aceita tabelas com pelo menos 10 colunas para maior flexibilidade
         if len(cols) < 10:
             continue
         
