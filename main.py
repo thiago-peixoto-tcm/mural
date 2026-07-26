@@ -38,33 +38,34 @@ def criar_sessao_http():
     return session
 
 def extrair_total_registros(soup):
-    summary_div = soup.find('div', class_='summary')
-    if summary_div:
-        texto = summary_div.get_text()
-        match = re.search(r'de\s+<b>?([\d\.]+)</b?>', summary_div.decode_contents()) or re.search(r'de\s+([\d\.]+)', texto)
-        if match:
-            return int(match.group(1).replace('.', ''))
+    # Procura por expressões como "140.423 itens" ou "de 140.423"
+    texto_pagina = soup.get_text()
+    match = re.search(r'de\s+([\d\.]+)\s+itens', texto_pagina, re.IGNORECASE)
+    if match:
+        return int(match.group(1).replace('.', ''))
+    
+    match_fallback = re.search(r'de\s+([\d\.]+)', texto_pagina)
+    if match_fallback:
+        return int(match_fallback.group(1).replace('.', ''))
 
     return 30 * MAX_PAGINAS_TESTE if MODO_TESTE else 3000
 
 def raspar_pagina(soup):
     dados = []
     
-    # Busca a tabela por container comum do framework ou por tag table direta
-    container = soup.find('div', id='w0') or soup.find('div', class_='grid-view')
-    tabela = container.find('table') if container else soup.find('table')
-    
+    # Encontra qualquer tabela presente na página
+    tabela = soup.find('table')
     if not tabela:
         return dados
 
-    # Pega todas as linhas do corpo da tabela ou da tabela inteira
-    tbody = tabela.find('tbody')
-    rows = tbody.find_all('tr') if tbody else tabela.find_all('tr')
+    # Pega todas as linhas TR da tabela
+    rows = tabela.find_all('tr')
 
     for row in rows:
         cols = row.find_all('td')
-        # Ignora cabeçalhos ou linhas sem colunas suficientes
-        if len(cols) < 5:
+        
+        # Ignora linhas que tenham menos de 10 colunas ou que sejam a linha de filtros (que tem <input> ou <select>)
+        if len(cols) < 10 or row.find('input') or row.find('select'):
             continue
         
         legislacao = cols[0].get_text(strip=True) if len(cols) > 0 else ""
