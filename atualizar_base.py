@@ -1,25 +1,21 @@
+import concurrent.futures
+import cloudscraper
+import pandas as pd
+from bs4 import BeautifulSoup
 import math
 import time
 import re
-import sys
-from bs4 import BeautifulSoup
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Tenta importar o cloudscraper e avisa no log caso falhe
-try:
-    import cloudscraper
-    print("✅ Biblioteca 'cloudscraper' importada com sucesso!")
-except ImportError as e:
-    print(f"❌ Erro ao importar cloudscraper: {e}")
-    sys.exit(1)
-
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
-BASE_URL = "https://www.tcmpa.tc.br"
-URL_BASE_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
+CONEXOES_SIMULTANEAS = 3
 
-# Instancia o scraper com emulação de navegador Chrome
+# MODO TESTE: True roda só 2 páginas para testar rápido.
+MODO_TESTE = True
+
+# Cria um scraper que simula navegador de computador
 scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -28,63 +24,81 @@ scraper = cloudscraper.create_scraper(
     }
 )
 
-def extrair_pagina(pagina):
-    url = URL_BASE_PAGINA.format(pagina)
-    print(f"🌐 Acessando página {pagina}: {url}")
-    try:
-        response = scraper.get(url, timeout=30)
-        print(f"📡 Status da resposta na página {pagina}: {response.status_code}")
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Busca flexível por tabelas
-            tabela = soup.find('table', class_='table') or soup.find('table')
-            if not tabela:
-                print(f"⚠️ Nenhuma tabela encontrada na página {pagina}.")
-                return []
+def descobrir_total_paginas():
+    url = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page=1&per-page=30"
+    
+    for tentativa in range(3):
+        try:
+            response = scraper.get(url, timeout=20)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                texto_paginacao = soup.get_text()
+                
+                match = re.search(r'de\s+([\d.]+)\s+itens', texto_paginacao)
+                if match:
+                    total_itens = int(match.group(1).replace('.', ''))
+                    paginas_calculadas = math.ceil(total_itens / 30)
+                    print(f"📊 Sistema Identificou: {total_itens} licitações no total.")
+                    print(f"🔄 Total necessário: {paginas_calculadas} páginas.")
+                    return paginas_calculadas
+        except Exception as e:
+            if tentativa < 2:
+                print(f"⚠️ Servidor recusou a conexão inicial (Tentativa {tentativa+1}/3). Aguardando...")
+                time.sleep(2)
+            else:
+                print(f"❌ Erro ao calcular páginas: {e}")
+    
+    print("📋 Usando valor padrão de segurança: 10 páginas.")
+    return 10
 
-            tbody = tabela.find('tbody')
-            if not tbody:
-                return []
-
-            rows = tbody.find_all('tr')
-            linhas = []
-            
-            for row in rows:
-                cols = row.find_all('td')
-                if len(cols) >= 12:
-                    link_tag = cols[1].find('a')
-                    numero_texto = link_tag.get_text(strip=True) if link_tag else cols[1].get_text(strip=True)
+def baixar_pagina(page):
+    url = f"https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={page}&per-page=30"
+    
+    for tentativa in range(3):
+        try:
+            response = scraper.get(url, timeout=20)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                tabela = soup.find('table')
+                if not tabela: 
+                    return []
                     
-                    link_ficha = ""
-                    if link_tag and 'href' in link_tag.attrs:
-                        href = link_tag['href']
-                        link_ficha = href if href.startswith('http') else BASE_URL + href
-
-                    linhas.append([
-                        cols[0].get_text(strip=True),   # Legislação
-                        numero_texto,                  # Número
-                        link_ficha,                    # Link Ficha
-                        cols[2].get_text(strip=True),   # Modalidade
-                        cols[3].get_text(strip=True),   # Tipo
-                        cols[4].get_text(strip=True),   # Objeto
-                        cols[5].get_text(strip=True),   # Data Abertura
-                        cols[6].get_text(strip=True),   # Data Publicação
-                        cols[7].get_text(strip=True),   # Município
-                        cols[8].get_text(strip=True),   # Órgão
-                        cols[9].get_text(strip=True),   # Situação
-                        cols[10].get_text(strip=True),  # Valor Referência
-                        cols[11].get_text(strip=True)   # Valor Adjudicado
-                    ])
-                    
-            print(f"✅ Página {pagina}: {len(linhas)} linhas extraídas.")
-            return linhas
-        else:
-            print(f"❌ Erro na página {pagina}: HTTP {response.status_code}")
-    except Exception as e:
-        print(f"💥 Exceção na página {pagina}: {e}")
-        
+                linhas_da_pagina = []
+                for row in tabela.find_all('tr'):
+                    if row.find('th') or row.find('select') or row.find('input'): 
+                        continue
+                        
+                    tds = row.find_all('td')
+                    if tds and len(tds) >= 10:
+                        cols = [td.get_text(strip=True) for td in tds]
+                        
+                        td_numero = tds[1]
+                        tag_a = td_numero.find('a')
+                        link_ficha = ""
+                        if tag_a and tag_a.has_attr('href'):
+                            link_ficha = tag_a['href']
+                            if not link_ficha.startswith('http'):
+                                link_ficha = "https://www.tcmpa.tc.br" + link_ficha
+                        
+                        dados_linha = [
+                            cols[0],                                                # legisl
+                            cols[1],                                                # Número LIC
+                            link_ficha,                                             # Link_Ficha
+                            cols[2],                                                # Modalidade
+                            cols[3],                                                # Tipo
+                            cols[4],                                                # Objeto
+                            cols[5],                                                # Abertura
+                            cols[6],                                                # Publicação
+                            cols[7],                                                # Município
+                            cols[8],                                                # UG
+                            cols[9],                                                # Situação
+                            cols[10] if len(cols) > 10 else "0,00",                 # VLR Referência
+                            cols[11] if len(cols) > 11 else "0,00"                  # VLR Adjudicado
+                        ]
+                        linhas_da_pagina.append(dados_linha)
+                return linhas_da_pagina
+        except Exception:
+            time.sleep(1.5)
     return []
 
 def conectar_google_sheets():
@@ -93,27 +107,46 @@ def conectar_google_sheets():
     client = gspread.authorize(credentials)
     return client.open_by_key(SPREADSHEET_ID).sheet1
 
-def executar():
-    print("🚀 INICIANDO PROCESSAMENTO...")
+def principal():
+    print("🚀 Iniciando a extração do TCM-PA via GitHub Actions...")
     
-    # Teste inicial na página 1
-    dados = extrair_pagina(1)
+    total_paginas_dinamico = descobrir_total_paginas()
+    paginas_para_rodar = 2 if MODO_TESTE else total_paginas_dinamico
     
-    if dados:
-        print(f"\n📤 Conectando ao Google Sheets para enviar {len(dados)} registros...")
+    if MODO_TESTE:
+        print("▶️ MODO TESTE ATIVADO: Rodando apenas 2 páginas.")
+        
+    lista_final = []
+    paginas_processadas = 0
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CONEXOES_SIMULTANEAS) as executor:
+        futuros = {executor.submit(baixar_pagina, p): p for p in range(1, paginas_para_rodar + 1)}
+        for futuro in concurrent.futures.as_completed(futuros):
+            paginas_processadas += 1
+            resultado = futuro.result()
+            if resultado: 
+                lista_final.extend(resultado)
+            
+            if paginas_processadas % 5 == 0 or paginas_processadas == paginas_para_rodar:
+                print(f"  └─ Progresso: {paginas_processadas}/{paginas_para_rodar} páginas concluídas...")
+
+    if lista_final:
+        print(f"\n✅ SUCESSO! {len(lista_final)} linhas extraídas.")
+        print("📤 Enviando para o Google Sheets...")
+        
         sheet = conectar_google_sheets()
         cabecalho = [[
-            'Legislação', 'Número', 'Link Ficha', 'Modalidade', 'Tipo', 
-            'Objeto', 'Data Abertura', 'Data Publicação', 'Município', 
-            'Órgão', 'Situação', 'Valor Referência (R$)', 'Valor Adjudicado (R$)'
+            'Legislação', 'Número LIC', 'Link Ficha', 'Modalidade', 'Tipo', 
+            'Objeto', 'Abertura', 'Publicação', 'Município', 
+            'UG', 'Situação', 'VLR Referência', 'VLR Adjudicado'
         ]]
         
         sheet.clear()
         sheet.update('A1', cabecalho)
-        sheet.append_rows(dados)
-        print("🎉 GRAVAÇÃO NO GOOGLE SHEETS FINALIZADA COM SUCESSO!")
+        sheet.append_rows(lista_final)
+        print("🎉 GRAVAÇÃO CONCLUÍDA COM SUCESSO NO GOOGLE SHEETS!")
     else:
-        print("⚠️ Nenhuma linha extraída. Verifique os status acima.")
+        print("\n❌ Nenhuma linha pôde ser extraída do site.")
 
 if __name__ == "__main__":
-    executar()
+    principal()
