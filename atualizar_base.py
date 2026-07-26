@@ -10,8 +10,8 @@ from google.oauth2.service_account import Credentials
 
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
-BASE_URL = "https://www.tcm.pa.gov.br"
-URL_BASE_PAGINA = "https://www.tcm.pa.gov.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
+BASE_URL = "https://www.tcmpa.tc.br"
+URL_BASE_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
