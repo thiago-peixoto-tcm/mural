@@ -10,8 +10,8 @@ from google.oauth2.service_account import Credentials
 
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
-BASE_URL = "https://www.tcmpa.tc.br"
-URL_BASE_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
+BASE_URL = "https://www.tcm.pa.gov.br"
+URL_BASE_PAGINA = "https://www.tcm.pa.gov.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -91,9 +91,14 @@ def conectar_google_sheets():
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
     return sheet
 
-def executar():
+def executar(modo_teste=False):
     inicio_tempo = time.time()
     total_paginas = obter_total_paginas()
+    
+    # Se estiver em modo teste, limita a 3 páginas
+    if modo_teste:
+        total_paginas = min(3, total_paginas)
+        print("🧪 Modo teste ativado: raspando apenas 3 páginas (≈90 linhas).")
     
     print(f"🚀 Baixando {total_paginas} páginas em paralelo (usando {MAX_WORKERS} conexões)...")
     
@@ -144,4 +149,8 @@ def executar():
     print(f"🎉 Processo concluído com sucesso em {tempo_decorrido:.2f} minutos!")
 
 if __name__ == "__main__":
-    executar()
+    # Para rodar em modo teste (3 páginas):
+    executar(modo_teste=True)
+
+    # Para rodar completo, basta chamar:
+    # executar(modo_teste=False)
