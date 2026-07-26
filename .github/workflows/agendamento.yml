@@ -20,10 +20,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências
+      - name: Instalar dependências do Python
         run: |
           python -m pip install --upgrade pip
-          pip install cloudscraper requests pandas beautifulsoup4 gspread google-auth google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install playwright beautifulsoup4 pandas gspread google-auth google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Instalar Navegador Chromium (Playwright)
+        run: |
+          python -m playwright install chromium --with-deps
 
       - name: Criar arquivo de credenciais do Google
         env:
