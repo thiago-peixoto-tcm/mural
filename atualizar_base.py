@@ -7,8 +7,8 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gspread
 from google.oauth2.service_account import Credentials
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
@@ -94,31 +94,26 @@ def salvar_csv_drive(dados):
     nome_arquivo = "Base_Licitacoes_Principais.csv"
     df.to_csv(nome_arquivo, index=False, encoding="utf-8-sig")
 
-    # Autenticação correta com PyDrive2 usando credenciais de serviço
-    gauth = GoogleAuth()
-    gauth.settings['client_config_backend'] = 'service'
-    gauth.settings['service_config'] = {
-        "client_json_file_path": "credentials.json"
-    }
-    gauth.ServiceAuth()
-    drive = GoogleDrive(gauth)
+    # Autenticação com conta de serviço
+    scopes = ["https://www.googleapis.com/auth/drive"]
+    credentials = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+    service = build("drive", "v3", credentials=credentials)
 
     # Procurar se já existe arquivo com esse nome na pasta
-    file_list = drive.ListFile({'q': f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed=false"}).GetList()
-    file_id = None
-    for f in file_list:
-        if f['title'] == nome_arquivo:
-            file_id = f['id']
-            break
+    query = f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and name='{nome_arquivo}' and trashed=false"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    items = results.get("files", [])
 
-    if file_id:
-        file_drive = drive.CreateFile({'id': file_id})
+    if items:
+        file_id = items[0]["id"]
+        media = MediaFileUpload(nome_arquivo, mimetype="text/csv", resumable=True)
+        service.files().update(fileId=file_id, media_body=media).execute()
+        print(f"📂 Arquivo CSV '{nome_arquivo}' atualizado no Google Drive.")
     else:
-        file_drive = drive.CreateFile({'title': nome_arquivo, 'parents':[{'id': GOOGLE_DRIVE_FOLDER_ID}]})
-
-    file_drive.SetContentFile(nome_arquivo)
-    file_drive.Upload()
-    print(f"📂 Arquivo CSV '{nome_arquivo}' atualizado no Google Drive.")
+        file_metadata = {"name": nome_arquivo, "parents": [GOOGLE_DRIVE_FOLDER_ID]}
+        media = MediaFileUpload(nome_arquivo, mimetype="text/csv", resumable=True)
+        service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        print(f"📂 Arquivo CSV '{nome_arquivo}' criado no Google Drive.")
 
 def executar(modo_teste=False):
     inicio_tempo = time.time()
