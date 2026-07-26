@@ -1,76 +1,70 @@
 import math
 import time
 import re
-import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gspread
 from google.oauth2.service_account import Credentials
+# USAMOS curl_cffi PARA BURLAR O BLOQUEIO DO SITE NO GITHUB ACTIONS
+from curl_cffi import requests
 
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
-
 BASE_URL = "https://www.tcmpa.tc.br"
 URL_BASE_PAGINA = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={}&per-page=30"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-}
-
-# Quantidade segura de conexões simultâneas
-MAX_WORKERS = 3 
+MAX_WORKERS = 2  # Limite seguro para não sobrecarregar
 
 def obter_total_paginas():
-    """Acessa a primeira página para ler o total de registros do resumo da grid."""
+    """Acessa a primeira página simulando um navegador real (Chrome 120)."""
     url = URL_BASE_PAGINA.format(1)
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        summary_div = soup.find('div', class_='summary')
-        if summary_div:
-            texto = summary_div.get_text()
-            # Procura o padrão "de 140.423 itens"
-            match = re.search(r'de\s+([\d\.]+)', texto)
-            if match:
-                total_itens = int(match.group(1).replace('.', ''))
-                total_paginas = math.ceil(total_itens / 30)
-                print(f"📊 Total de licitações identificadas: {total_itens:,} | Total Páginas: {total_paginas}")
-                return total_paginas
+        response = requests.get(url, impersonate="chrome120", timeout=20)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser')
+            summary_div = soup.find('div', class_='summary')
+            if summary_div:
+                texto = summary_div.get_text()
+                match = re.search(r'de\s+([\d\.]+)', texto)
+                if match:
+                    total_itens = int(match.group(1).replace('.', ''))
+                    total_paginas = math.ceil(total_itens / 30)
+                    print(f"📊 Total de licitações: {total_itens:,} | Páginas: {total_paginas}")
+                    return total_paginas
+        else:
+            print(f"⚠️ Erro ao acessar primeira página. Status Code: {response.status_code}")
     except Exception as e:
-        print(f"⚠️ Erro ao calcular total de páginas: {e}")
+        print(f"⚠️ Exceção ao obter total de páginas: {e}")
     
-    return 4677
+    return 3
 
 def extrair_pagina(pagina, retentativas=3):
-    """Lê uma página e extrai as linhas exatamente conforme o HTML do TCMPA."""
+    """Extrai as linhas da tabela de uma página simulando requisição de navegador."""
     url = URL_BASE_PAGINA.format(pagina)
     for tentativa in range(1, retentativas + 1):
         try:
-            response = requests.get(url, headers=HEADERS, timeout=15)
+            response = requests.get(url, impersonate="chrome120", timeout=20)
+            
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, 'html.parser')
                 
-                # CORREÇÃO CRÍTICA: O ID correto da div no HTML do TCMPA é 'w1'
-                div_tabela = soup.find('div', id='w1') or soup.find('div', class_='grid-view')
-                if not div_tabela:
-                    return pagina, []
-                
-                tbody = div_tabela.find('tbody')
-                if not tbody:
-                    return pagina, []
+                # Busca flexível da tabela
+                table = soup.find('table', class_='table') or soup.find('table')
+                if not table:
+                    continue
 
-                # Captura APENAS as linhas do corpo da tabela (ignorando os filtros do header)
+                tbody = table.find('tbody')
+                if not tbody:
+                    continue
+
                 rows = tbody.find_all('tr')
                 linhas = []
                 
                 for row in rows:
                     cols = row.find_all('td')
                     
-                    # Cada linha de licitação válida possui exatamente 12 colunas
+                    # Linhas de dados válidas têm 12 colunas
                     if len(cols) >= 12:
                         link_tag = cols[1].find('a')
                         numero_texto = link_tag.get_text(strip=True) if link_tag else cols[1].get_text(strip=True)
@@ -98,7 +92,10 @@ def extrair_pagina(pagina, retentativas=3):
                         
                 if linhas:
                     return pagina, linhas
-        except Exception:
+            else:
+                print(f"⚠️ Página {pagina} retornou Status Code {response.status_code} na tentativa {tentativa}")
+                
+        except Exception as e:
             time.sleep(2)
             
     return pagina, []
@@ -114,18 +111,12 @@ def executar(modo_teste=True, limite_paginas_teste=3):
     inicio_tempo = time.time()
     
     total_paginas = obter_total_paginas()
+    paginas_para_rodar = min(limite_paginas_teste, total_paginas) if modo_teste else total_paginas
     
-    # Lógica do Modo Teste
-    if modo_teste:
-        paginas_para_rodar = min(limite_paginas_teste, total_paginas)
-        print(f"\n🧪 MODO TESTE ATIVADO: Baixando {paginas_para_rodar} páginas (≈{paginas_para_rodar * 30} registros)...")
-    else:
-        paginas_para_rodar = total_paginas
-        print(f"\n🚀 MODO COMPLETO: Baixando todas as {paginas_para_rodar} páginas...")
+    print(f"\n🧪 Executando raspagem de {paginas_para_rodar} página(s)...")
 
     todas_linhas = [None] * paginas_para_rodar
 
-    # Execução paralela
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(extrair_pagina, pag): pag for pag in range(1, paginas_para_rodar + 1)}
         
@@ -134,21 +125,17 @@ def executar(modo_teste=True, limite_paginas_teste=3):
             pag, linhas = future.result()
             todas_linhas[pag - 1] = linhas
             concluidos += 1
-            print(f"  └─ Página {pag} extraída ({len(linhas)} itens) | Progresso: {concluidos}/{paginas_para_rodar}")
+            print(f"  └─ Página {pag}: {len(linhas)} registros extraídos.")
 
-    # Junta o resultado mantendo a ordem
-    dados_finais = []
-    for bloco in todas_linhas:
-        if bloco:
-            dados_finais.extend(bloco)
+    dados_finais = [item for bloco in todas_linhas if bloco for item in bloco]
 
-    print(f"\n✅ Raspagem concluída! Total de {len(dados_finais)} registros extraídos.")
+    print(f"\n✅ Total extraído: {len(dados_finais)} registros.")
 
     if not dados_finais:
-        print("❌ Nenhum dado foi extraído. Verifique se o site bloqueou o IP ou mudou de estrutura.")
+        print("❌ Nenhum dado foi extraído.")
         return
 
-    print("📤 Enviando os dados para o Google Sheets...")
+    print("📤 Enviando para o Google Sheets...")
 
     sheet = conectar_google_sheets()
     
@@ -158,21 +145,11 @@ def executar(modo_teste=True, limite_paginas_teste=3):
         'Órgão', 'Situação', 'Valor Referência (R$)', 'Valor Adjudicado (R$)'
     ]]
     
-    # Limpa a planilha e escreve o cabeçalho na linha 1
     sheet.clear()
     sheet.update('A1', cabecalho)
+    sheet.append_rows(dados_finais)
     
-    # Envia os lotes para o Google Sheets
-    TAMANHO_LOTE = 2000
-    for i in range(0, len(dados_finais), TAMANHO_LOTE):
-        lote = dados_finais[i:i + TAMANHO_LOTE]
-        sheet.append_rows(lote)
-        print(f"📊 Lote enviado ({len(lote)} linhas)...")
-        time.sleep(1)
-
-    tempo_decorrido = time.time() - inicio_tempo
-    print(f"\n🎉 Processo concluído em {tempo_decorrido:.2f} segundos!")
+    print(f"🎉 Concluído com sucesso em {time.time() - inicio_tempo:.2f}s!")
 
 if __name__ == "__main__":
-    # Roda em modo teste (apenas 3 páginas / ~90 linhas)
     executar(modo_teste=True)
