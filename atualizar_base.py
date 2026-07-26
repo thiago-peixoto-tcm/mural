@@ -7,8 +7,8 @@ from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import gspread
 from google.oauth2.service_account import Credentials
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 
 # --- CONFIGURAÇÕES ---
 SPREADSHEET_ID = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8l7EQer_GEs"
@@ -20,8 +20,6 @@ HEADERS = {
 }
 
 MAX_WORKERS = 15
-
-# Pasta do Google Drive (onde salvar o CSV)
 GOOGLE_DRIVE_FOLDER_ID = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
 
 def obter_total_paginas():
@@ -56,7 +54,7 @@ def extrair_pagina(pagina, retentativas=3):
                 linhas = []
                 for row in rows:
                     cols = row.find_all('td')
-                    if len(cols) > 0:  # agora aceita qualquer linha com dados
+                    if len(cols) > 0:
                         link_tag = cols[1].find('a') if len(cols) > 1 else None
                         numero_texto = link_tag.get_text(strip=True) if link_tag else (cols[1].get_text(strip=True) if len(cols) > 1 else "")
                         link_ficha = BASE_URL + link_tag['href'] if link_tag and 'href' in link_tag.attrs else ""
@@ -100,7 +98,6 @@ def salvar_csv_drive(dados):
     gauth.LoadCredentialsFile("credentials.json")
     drive = GoogleDrive(gauth)
 
-    # Procurar se já existe arquivo com esse nome na pasta
     file_list = drive.ListFile({'q': f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed=false"}).GetList()
     file_id = None
     for f in file_list:
@@ -121,7 +118,7 @@ def executar(modo_teste=False):
     inicio_tempo = time.time()
     total_paginas = obter_total_paginas()
     if modo_teste:
-        total_paginas = min(3, total_paginas)  # só 3 páginas
+        total_paginas = min(3, total_paginas)
 
     print(f"🚀 Baixando {total_paginas} páginas em paralelo (usando {MAX_WORKERS} conexões)...")
     todas_linhas = [None] * total_paginas
@@ -166,5 +163,4 @@ def executar(modo_teste=False):
     print(f"🎉 Processo concluído com sucesso em {tempo_decorrido:.2f} minutos!")
 
 if __name__ == "__main__":
-    # Modo teste: True → só 3 páginas
-    executar(modo_teste=True)
+    executar(modo_teste=True)  # True = modo teste (3 páginas)
