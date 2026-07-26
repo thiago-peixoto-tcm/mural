@@ -17,6 +17,7 @@ MAX_PAGINAS_TESTE = 3
 
 BASE_URL = "https://www.tcmpa.tc.br/mural-de-licitacoes/licitacoes/listagem?page={page}&per-page=30"
 ID_PASTA_GOOGLE_DRIVE = "1RQETN6nX3L2_4tZHeu5zGJElIxn38yZ6"
+ID_ARQUIVO_EXISTENTE = "1UTlgbveIQP4CMNblsB9WDfNvKMdi17SI8I7EQer_GEs"
 NOME_ARQUIVO_CSV = "Base_Licitacoes_Principais.csv"
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -116,57 +117,29 @@ def raspar_pagina(soup):
 
     return dados
 
-def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pasta):
+def upload_para_google_drive(caminho_arquivo_local, file_id):
     """
-    Substitui o conteúdo do arquivo existente no Google Drive para evitar problemas de cota.
+    Atualiza diretamente o conteúdo da Planilha do Google existente via ID fixo.
     """
     creds = obter_credenciais_google()
     service = build('drive', 'v3', credentials=creds)
 
-    # Remove extensões para comparação se necessário (ex: compara 'Base_Licitacoes_Principais' com ou sem .csv)
-    nome_sem_extensao = os.path.splitext(nome_arquivo_destino)[0]
+    # Prepara o arquivo local indicando que ele deve atualizar uma Google Sheets
+    media = MediaFileUpload(
+        caminho_arquivo_local, 
+        mimetype='text/csv', 
+        resumable=True
+    )
 
-    # Busca abrangente dentro da pasta
-    query = f"'{id_pasta}' in parents and trashed = false"
-    response = service.files().list(
-        q=query, 
-        fields='files(id, name)',
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
+    print(f"Atualizando diretamente a Planilha do Google (ID: {file_id})...")
+    
+    service.files().update(
+        fileId=file_id, 
+        media_body=media,
+        supportsAllDrives=True
     ).execute()
     
-    files = response.get('files', [])
-    file_id = None
-
-    # Procura um arquivo correspondente pelo nome exato ou sem extensão
-    for f in files:
-        if f['name'] == nome_arquivo_destino or f['name'] == nome_sem_extensao:
-            file_id = f['id']
-            break
-
-    media = MediaFileUpload(caminho_arquivo_local, mimetype='text/csv', resumable=True)
-
-    if file_id:
-        print(f"Arquivo existente localizado no Google Drive (ID: {file_id}). Atualizando conteúdo...")
-        service.files().update(
-            fileId=file_id, 
-            media_body=media,
-            supportsAllDrives=True
-        ).execute()
-        print("Arquivo atualizado com sucesso!")
-    else:
-        print("Arquivo não encontrado na pasta. Criando novo arquivo...")
-        file_metadata = {
-            'name': nome_arquivo_destino, 
-            'parents': [id_pasta]
-        }
-        service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id',
-            supportsAllDrives=True
-        ).execute()
-        print("Arquivo criado e salvo com sucesso!")
+    print("Planilha atualizada com sucesso no Google Drive!")
 
 def main():
     session = criar_sessao_http()
@@ -208,9 +181,9 @@ def main():
     df.to_csv(NOME_ARQUIVO_CSV, index=False, encoding='utf-8-sig', sep=';')
     print(f"Arquivo CSV '{NOME_ARQUIVO_CSV}' gerado localmente.")
 
-    print("Enviando para o Google Drive...")
-    upload_para_google_drive(NOME_ARQUIVO_CSV, NOME_ARQUIVO_CSV, ID_PASTA_GOOGLE_DRIVE)
-    print("Processo concluído!")
+    print("Enviando atualização para a Planilha do Google Drive...")
+    upload_para_google_drive(NOME_ARQUIVO_CSV, ID_ARQUIVO_EXISTENTE)
+    print("Processo concluído com sucesso!")
 
 if __name__ == '__main__':
     main()
