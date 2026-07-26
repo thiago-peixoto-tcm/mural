@@ -30,7 +30,6 @@ def obter_credenciais_google():
     return Credentials.from_service_account_info(info, scopes=SCOPES)
 
 def criar_sessao_http():
-    """Cria uma sessão HTTP persistente com headers de navegador real."""
     session = requests.Session()
     session.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -43,11 +42,6 @@ def criar_sessao_http():
     return session
 
 def extrair_total_registros(soup):
-    """
-    Localiza no HTML o total de itens registrados.
-    Possui fallback para garantir a execução mesmo se a estrutura mudar.
-    """
-    # Estratégia 1: Div 'summary'
     summary_div = soup.find('div', class_='summary')
     if summary_div:
         texto = summary_div.get_text()
@@ -55,25 +49,18 @@ def extrair_total_registros(soup):
         if match:
             return int(match.group(1).replace('.', ''))
     
-    # Estratégia 2: Regex geral na página
     match_bruto = re.search(r'de\s*<b>?\s*([\d\.]+)\s*<\/b>?\s*itens', str(soup), re.IGNORECASE)
     if match_bruto:
         return int(match_bruto.group(1).replace('.', ''))
 
-    # Estratégia 3: Contagem de itens na última página da paginação
     paginacao = soup.find('ul', class_='pagination')
     if paginacao:
         links = paginacao.find_all('a')
-        paginas = []
-        for l in links:
-            if l.get_text().isdigit():
-                paginas.append(int(l.get_text()))
+        paginas = [int(l.get_text()) for l in links if l.get_text().isdigit()]
         if paginas:
             max_p = max(paginas)
-            print(f"Aviso: Usando fallback de páginas ({max_p} páginas identificadas).")
             return max_p * 30
 
-    print("Alerta: Não foi possível capturar o resumo exato. Definindo padrão de segurança.")
     return 30 * MAX_PAGINAS_TESTE if MODO_TESTE else 3000
 
 def raspar_pagina(soup):
@@ -130,11 +117,20 @@ def raspar_pagina(soup):
     return dados
 
 def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pasta):
+    """
+    Envia/Atualiza o CSV no Google Drive contornando a restrição de quota da Service Account.
+    """
     creds = obter_credenciais_google()
     service = build('drive', 'v3', credentials=creds)
 
+    # Busca se o arquivo já existe na pasta
     query = f"'{id_pasta}' in parents and name = '{nome_arquivo_destino}' and trashed = false"
-    response = service.files().list(q=query, fields='files(id, name)').execute()
+    response = service.files().list(
+        q=query, 
+        fields='files(id, name)',
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
     files = response.get('files', [])
 
     media = MediaFileUpload(caminho_arquivo_local, mimetype='text/csv', resumable=True)
@@ -142,13 +138,25 @@ def upload_para_google_drive(caminho_arquivo_local, nome_arquivo_destino, id_pas
     if files:
         file_id = files[0]['id']
         print(f"Substituindo arquivo existente no Google Drive (ID: {file_id})...")
-        service.files().update(fileId=file_id, media_body=media).execute()
-        print("Arquivo sobrescrito no Drive com sucesso.")
+        service.files().update(
+            fileId=file_id, 
+            media_body=media,
+            supportsAllDrives=True
+        ).execute()
+        print("Arquivo sobrescrito com sucesso!")
     else:
-        print("Criando novo arquivo no Google Drive...")
-        file_metadata = {'name': nome_arquivo_destino, 'parents': [id_pasta]}
-        service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print("Arquivo salvo no Drive com sucesso.")
+        print("Criando arquivo na pasta compartilhada do Google Drive...")
+        file_metadata = {
+            'name': nome_arquivo_destino, 
+            'parents': [id_pasta]
+        }
+        service.files().create(
+            body=file_metadata, 
+            media_body=media, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        print("Arquivo criado e salvo com sucesso!")
 
 def main():
     session = criar_sessao_http()
@@ -156,10 +164,6 @@ def main():
     
     print(f"Acessando página inicial: {url_inicial}")
     resp = session.get(url_inicial, timeout=30)
-    
-    if resp.status_code != 200:
-        print(f"Aviso de Status HTTP: {resp.status_code}. Tentando prosseguir...")
-
     soup = BeautifulSoup(resp.content, 'html.parser')
 
     total_registros = extrair_total_registros(soup)
